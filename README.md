@@ -4,15 +4,15 @@ Distributed hashcat job queue with a web UI, a TUI, and a CLI over one
 OpenAPI-described API, GPU/CPU telemetry, LDAP/AD-aware RBAC, and metrics
 export for Prometheus/Zabbix/Grafana.
 
-This repository currently holds the **Phase 1** scaffold: a single-box core.
-Design docs (architecture decision record and the Phase 1 build spec) live in
-the project workspace.
+Design docs (architecture decision record and the build spec) live in the
+project workspace.
 
 ## Status
 
-Phase 1 — single-box core. Compiling scaffold of the workspace, schema,
-runner, API server, and `fj` CLI. Full behaviour is in progress per the build
-checklist in the Phase 1 spec.
+**1.0.0** — first stable release. Phase 1 single-box core (scheduler, keyspace
+chunking, ingest/SSE, RBAC), Phase 2 TUI dashboard + GPU/host telemetry, and
+Phase 3 distributed agents (enrollment, WebSocket task protocol, remote runner)
+are all in place. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Workspace
 

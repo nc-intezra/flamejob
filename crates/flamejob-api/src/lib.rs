@@ -196,8 +196,8 @@ impl Event {
 #[openapi(
     info(
         title = "flamejob",
-        version = "0.1.0",
-        description = "Distributed hashcat queue — Phase 1 API"
+        version = "1.0.0",
+        description = "Distributed hashcat queue API"
     ),
     components(schemas(
         LoginRequest,
