@@ -42,11 +42,16 @@ pub struct Scheduler {
 }
 
 pub fn spawn(state: AppState) {
-    let runner: Arc<dyn Runner> = Arc::new(LocalRunner::new(
-        state.cfg.hashcat.binary.clone(),
-        state.cfg.hashcat.workload,
-        state.cfg.hashcat.data_dir.clone(),
-    ));
+    let runner: Arc<dyn Runner> = if state.cfg.scheduler.runner == "remote" {
+        tracing::info!("scheduler using RemoteRunner (agent dispatch)");
+        Arc::new(crate::agent::RemoteRunner::new(state.agents.clone()))
+    } else {
+        Arc::new(LocalRunner::new(
+            state.cfg.hashcat.binary.clone(),
+            state.cfg.hashcat.workload,
+            state.cfg.hashcat.data_dir.clone(),
+        ))
+    };
     let chunk_size = state.cfg.scheduler.chunk_size;
     let max_chunks = state.cfg.scheduler.max_chunks.max(1);
     let sched = Arc::new(Scheduler {
@@ -571,6 +576,8 @@ impl Scheduler {
         }
         let running = self.running.lock().await.len() as f64;
         metrics::gauge!("flamejob_tasks_running").set(running);
+        let agents = self.state.agents.connected_count().await as f64;
+        metrics::gauge!("flamejob_agents_connected").set(agents);
     }
 }
 

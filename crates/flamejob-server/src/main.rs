@@ -1,10 +1,12 @@
 //! flamejobd — the flamejob control-plane server.
+mod agent;
 mod auth;
 mod bootstrap;
 mod config;
 mod crypto;
 mod error;
 mod metrics;
+mod pki;
 mod routes;
 mod scheduler;
 mod state;

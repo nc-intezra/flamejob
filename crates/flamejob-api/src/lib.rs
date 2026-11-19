@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use utoipa::{OpenApi, ToSchema};
 use uuid::Uuid;
 
+pub mod agent;
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct LoginRequest {
     pub username: String,
@@ -180,7 +182,12 @@ pub struct DeviceSample {
         UserCreate,
         Problem,
         DeviceView,
-        DeviceSample
+        DeviceSample,
+        agent::AgentClaimCreate,
+        agent::AgentClaim,
+        agent::EnrollRequest,
+        agent::EnrollResponse,
+        agent::AgentInfo
     ))
 )]
 pub struct ApiDoc;

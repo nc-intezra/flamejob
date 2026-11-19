@@ -18,6 +18,10 @@ pub fn router(state: AppState) -> Router {
         .route("/metrics", get(metrics))
         .route("/devices", get(list_devices))
         .route("/devices/:name/history", get(device_history))
+        .route("/agents", get(crate::agent::list_agents))
+        .route("/agent/enroll", post(crate::agent::enroll))
+        .route("/agent/stream", get(crate::agent::agent_stream))
+        .route("/admin/agent-claims", post(crate::agent::create_claim))
         .route("/openapi.json", get(openapi))
         .route("/auth/login", post(login))
         .route("/auth/me", get(me))
@@ -329,12 +333,55 @@ async fn list_cracked(
     Ok(Json(out))
 }
 
+#[allow(clippy::type_complexity)]
 async fn list_devices(
     State(state): State<AppState>,
     auth: AuthUser,
 ) -> Result<Json<Vec<flamejob_api::DeviceView>>, AppError> {
     auth.require(Capability::ViewStats)?;
-    Ok(Json(state.devices.read().await.clone()))
+    // The current_devices snapshot is fed by both the local collector and the
+    // remote-agent telemetry ingest, so it shows every device in one place.
+    let rows: Vec<(
+        String,
+        String,
+        Option<i32>,
+        Option<i32>,
+        Option<i64>,
+        Option<i64>,
+        Option<String>,
+        Option<i32>,
+        Option<i32>,
+        Option<i32>,
+        Option<i32>,
+        Option<i64>,
+    )> = sqlx::query_as(
+        "SELECT name, kind, temp, util, mem_used, mem_total, pstate, power_w, fan, \
+         clock_mhz, mem_clock_mhz, hashrate FROM current_devices ORDER BY kind DESC, name",
+    )
+    .fetch_all(&state.db)
+    .await?;
+    if rows.is_empty() {
+        // No sample persisted yet (fresh start): fall back to the in-memory snapshot.
+        return Ok(Json(state.devices.read().await.clone()));
+    }
+    let out = rows
+        .into_iter()
+        .map(|r| flamejob_api::DeviceView {
+            name: r.0,
+            kind: r.1,
+            temp: r.2.unwrap_or(0),
+            util: r.3.unwrap_or(0),
+            mem_used: r.4.unwrap_or(0),
+            mem_total: r.5.unwrap_or(0),
+            pstate: r.6.unwrap_or_default(),
+            power_w: r.7.unwrap_or(0),
+            fan: r.8.unwrap_or(0),
+            clock_mhz: r.9.unwrap_or(0),
+            mem_clock_mhz: r.10.unwrap_or(0),
+            hashrate: r.11.unwrap_or(0),
+        })
+        .collect();
+    Ok(Json(out))
 }
 
 #[allow(clippy::type_complexity)]
