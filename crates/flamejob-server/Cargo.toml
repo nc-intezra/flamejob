@@ -3,10 +3,22 @@ name = "flamejob-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "flamejob control-plane server (flamejobd): distributed hashcat job queue — API, scheduler, chunking, telemetry, agent fleet"
 
 [[bin]]
 name = "flamejobd"
 path = "src/main.rs"
+
+[package.metadata.deb]
+maintainer = "nc-intezra <nc-intezra@users.noreply.github.com>"
+section = "net"
+priority = "optional"
+# Built on Ubuntu 24.04 (glibc 2.39); dependencies are auto-computed from the
+# binary and resolve on Ubuntu 24.04 through 26.04.
+assets = [
+    ["target/release/flamejobd", "usr/bin/", "755"],
+    ["../../README.md", "usr/share/doc/flamejob-server/README.md", "644"],
+]
 
 [dependencies]
 flamejob-core = { path = "../flamejob-core" }

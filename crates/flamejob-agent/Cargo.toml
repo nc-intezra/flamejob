@@ -3,10 +3,19 @@ name = "flamejob-agent"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "flamejob distributed worker agent (fj-agent): runs hashcat chunk tasks for a flamejob control plane"
 
 [[bin]]
 name = "fj-agent"
 path = "src/main.rs"
+
+[package.metadata.deb]
+maintainer = "nc-intezra <nc-intezra@users.noreply.github.com>"
+section = "net"
+priority = "optional"
+assets = [
+    ["target/release/fj-agent", "usr/bin/", "755"],
+]
 
 [dependencies]
 flamejob-core = { path = "../flamejob-core" }
