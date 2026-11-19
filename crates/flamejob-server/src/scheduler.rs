@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::anyhow;
+use chrono::{DateTime, Utc};
 use flamejob_api::{Event, JobConfig};
 use flamejob_core::{JobState, RunHandle, Runner, RunnerTask, StatusUpdate, TaskState};
 use flamejob_runner::LocalRunner;
@@ -371,7 +372,11 @@ impl Scheduler {
             .bind(task_id)
             .execute(&self.state.db)
             .await;
-            if let Some(eta) = u.eta {
+            let eta = self
+                .compute_job_eta(job_id, task_id, u.progress, u.speed)
+                .await
+                .or(u.eta);
+            if let Some(eta) = eta {
                 let _ = sqlx::query("UPDATE jobs SET est_completion = $1 WHERE id = $2")
                     .bind(eta)
                     .bind(job_id)
@@ -417,16 +422,21 @@ impl Scheduler {
 
         if last == TaskState::Done {
             let _ = self.set_task(task_id, "done").await;
-            let pending: i64 =
-                sqlx::query_scalar("SELECT count(*) FROM tasks WHERE job_id = $1 AND state = 'pending'")
-                    .bind(job_id)
-                    .fetch_one(&self.state.db)
-                    .await
-                    .unwrap_or(0);
+            let pending: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM tasks WHERE job_id = $1 AND state = 'pending'",
+            )
+            .bind(job_id)
+            .fetch_one(&self.state.db)
+            .await
+            .unwrap_or(0);
             if pending == 0 {
                 // Last chunk done: finalize the whole job.
                 let (total, cracked) = self.counts(job_id).await;
-                let st = if total > 0 && cracked >= total { "completed" } else { "exhausted" };
+                let st = if total > 0 && cracked >= total {
+                    "completed"
+                } else {
+                    "exhausted"
+                };
                 self.set_job_terminal(job_id, st, None).await;
             } else {
                 // Release the slot; the tick loop starts the next pending chunk.
@@ -449,6 +459,42 @@ impl Scheduler {
                     .await;
             }
         }
+    }
+
+    /// Per-job ETA: remaining keyspace across all not-done chunks (the running
+    /// chunk counted by its remaining fraction) divided by current speed.
+    async fn compute_job_eta(
+        &self,
+        job_id: Uuid,
+        current_task: Uuid,
+        progress: f64,
+        speed: i64,
+    ) -> Option<DateTime<Utc>> {
+        if speed <= 0 {
+            return None;
+        }
+        let rows: Vec<(Uuid, String, i64)> =
+            sqlx::query_as("SELECT id, state::text, keyspace_len FROM tasks WHERE job_id = $1")
+                .bind(job_id)
+                .fetch_all(&self.state.db)
+                .await
+                .ok()?;
+        let mut remaining = 0f64;
+        for (id, state, len) in rows {
+            if state == "done" || len <= 0 {
+                continue;
+            }
+            if id == current_task {
+                remaining += len as f64 * (1.0 - progress.clamp(0.0, 1.0));
+            } else {
+                remaining += len as f64;
+            }
+        }
+        if remaining <= 0.0 {
+            return None;
+        }
+        let secs = remaining / speed as f64;
+        Some(Utc::now() + chrono::Duration::milliseconds((secs * 1000.0) as i64))
     }
 
     async fn resumable_job(&self) -> Option<Uuid> {

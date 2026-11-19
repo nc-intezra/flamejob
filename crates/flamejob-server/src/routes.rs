@@ -5,8 +5,8 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use chrono::Utc;
 use flamejob_api::*;
-use flamejob_core::{Capability, JobState};
-use flamejob_db::models::{HashlistRow, JobRow};
+use flamejob_core::{Capability, JobState, TaskState};
+use flamejob_db::models::HashlistRow;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use tokio_stream::wrappers::BroadcastStream;
@@ -26,6 +26,7 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/me", get(me))
         .route("/jobs", get(list_jobs).post(create_job))
         .route("/jobs/:id", get(get_job).patch(patch_job))
+        .route("/jobs/:id/tasks", get(list_job_tasks))
         .route("/jobs/:id/pause", post(pause_job))
         .route("/jobs/:id/resume", post(resume_job))
         .route("/jobs/:id/cancel", post(cancel_job))
@@ -106,14 +107,11 @@ async fn list_jobs(
     auth: AuthUser,
 ) -> Result<Json<Vec<JobView>>, AppError> {
     auth.require(Capability::ViewJobs)?;
-    let rows: Vec<JobRow> = sqlx::query_as(
-        "SELECT id, name, owner_user_id, hashlist_id, attack_mode, config, priority, \
-         state::text AS state, est_completion, error, created_at, started_at, finished_at \
-         FROM jobs ORDER BY priority, created_at",
-    )
-    .fetch_all(&state.db)
-    .await?;
-    Ok(Json(rows.iter().map(job_view).collect()))
+    let rows: Vec<JobAgg> =
+        sqlx::query_as(&format!("{JOB_SELECT} ORDER BY j.priority, j.created_at"))
+            .fetch_all(&state.db)
+            .await?;
+    Ok(Json(rows.into_iter().map(job_view).collect()))
 }
 
 async fn create_job(
@@ -139,6 +137,11 @@ async fn create_job(
     .bind(priority)
     .execute(&state.db)
     .await?;
+    let total: i32 = sqlx::query_scalar("SELECT total FROM hashlists WHERE id = $1")
+        .bind(body.hashlist_id)
+        .fetch_optional(&state.db)
+        .await?
+        .unwrap_or(0);
     state.publish(Event::JobUpdated {
         job_id: id,
         state: JobState::Queued,
@@ -150,6 +153,10 @@ async fn create_job(
         priority,
         created_at: Utc::now(),
         est_completion: None,
+        progress: 0.0,
+        speed: 0,
+        cracked: 0,
+        total,
     };
     Ok((StatusCode::CREATED, Json(view)))
 }
@@ -160,16 +167,12 @@ async fn get_job(
     Path(id): Path<Uuid>,
 ) -> Result<Json<JobView>, AppError> {
     auth.require(Capability::ViewJobs)?;
-    let row: Option<JobRow> = sqlx::query_as(
-        "SELECT id, name, owner_user_id, hashlist_id, attack_mode, config, priority, \
-         state::text AS state, est_completion, error, created_at, started_at, finished_at \
-         FROM jobs WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_optional(&state.db)
-    .await?;
+    let row: Option<JobAgg> = sqlx::query_as(&format!("{JOB_SELECT} WHERE j.id = $1"))
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?;
     let row = row.ok_or_else(|| AppError::NotFound("job not found".into()))?;
-    Ok(Json(job_view(&row)))
+    Ok(Json(job_view(row)))
 }
 
 #[derive(serde::Deserialize)]
@@ -534,13 +537,72 @@ fn parse_job_state(s: &str) -> JobState {
     serde_json::from_value(serde_json::Value::String(s.to_string())).unwrap_or(JobState::Queued)
 }
 
-fn job_view(r: &JobRow) -> JobView {
+const JOB_SELECT: &str = "SELECT j.id, j.name, j.state::text, j.priority, j.created_at, \
+    j.est_completion, \
+    COALESCE((SELECT SUM(CASE WHEN t.state='done' THEN GREATEST(t.keyspace_len,1)::float8 \
+        ELSE t.progress*GREATEST(t.keyspace_len,1)::float8 END) \
+        / NULLIF(SUM(GREATEST(t.keyspace_len,1)),0) FROM tasks t WHERE t.job_id=j.id),0)::float8 AS progress, \
+    COALESCE((SELECT SUM(speed) FROM tasks t WHERE t.job_id=j.id AND t.state='running'),0)::int8 AS speed, \
+    h.cracked, h.total \
+    FROM jobs j JOIN hashlists h ON h.id=j.hashlist_id";
+
+type JobAgg = (
+    Uuid,
+    String,
+    String,
+    i32,
+    chrono::DateTime<chrono::Utc>,
+    Option<chrono::DateTime<chrono::Utc>>,
+    f64,
+    i64,
+    i32,
+    i32,
+);
+
+fn job_view(r: JobAgg) -> JobView {
     JobView {
-        id: r.id,
-        name: r.name.clone(),
-        state: parse_job_state(&r.state),
-        priority: r.priority,
-        created_at: r.created_at,
-        est_completion: r.est_completion,
+        id: r.0,
+        name: r.1,
+        state: parse_job_state(&r.2),
+        priority: r.3,
+        created_at: r.4,
+        est_completion: r.5,
+        progress: r.6,
+        speed: r.7,
+        cracked: r.8,
+        total: r.9,
     }
+}
+
+fn parse_task_state(s: &str) -> TaskState {
+    serde_json::from_value(serde_json::Value::String(s.to_string())).unwrap_or(TaskState::Pending)
+}
+
+async fn list_job_tasks(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<TaskView>>, AppError> {
+    auth.require(Capability::ViewJobs)?;
+    let rows: Vec<(Uuid, Uuid, String, f64, i64, i64, i64)> = sqlx::query_as(
+        "SELECT id, job_id, state::text, progress, speed, keyspace_offset, keyspace_len \
+         FROM tasks WHERE job_id = $1 ORDER BY keyspace_offset",
+    )
+    .bind(id)
+    .fetch_all(&state.db)
+    .await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|(id, job_id, st, progress, speed, off, len)| TaskView {
+                id,
+                job_id,
+                state: parse_task_state(&st),
+                progress,
+                speed,
+                keyspace_offset: off,
+                keyspace_len: len,
+                eta: None,
+            })
+            .collect(),
+    ))
 }
