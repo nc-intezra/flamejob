@@ -1,0 +1,12 @@
+[package]
+name = "flamejob-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+flamejob-core = { path = "../flamejob-core" }
+serde = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+utoipa = { workspace = true }

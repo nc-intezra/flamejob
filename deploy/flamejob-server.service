@@ -1,0 +1,14 @@
+[Unit]
+Description=flamejob control plane (flamejobd)
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=flamejob
+Environment=FLAMEJOB_CONFIG=/etc/flamejob/flamejob.toml
+ExecStart=/usr/local/bin/flamejobd
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

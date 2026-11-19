@@ -1,0 +1,22 @@
+[server]
+bind = "0.0.0.0:8443"
+
+[database]
+# 'local'  = installer manages a Postgres on this box
+# 'external' = point at an existing central database via dsn
+mode = "local"
+dsn  = "postgres://flamejob@localhost/flamejob"
+max_connections = 10
+
+[auth]
+jwt_secret = "CHANGE-ME"
+token_ttl_hours = 1
+
+[hashcat]
+binary   = "/usr/bin/hashcat"
+data_dir = "/var/lib/flamejob"
+workload = 3
+
+[crypto]
+# AD-supplied where available, else generated locally by the installer
+plaintext_key_file = "/etc/flamejob/plain.key"
