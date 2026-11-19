@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use utoipa::{OpenApi, ToSchema};
 use uuid::Uuid;
 
+pub mod agent;
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct LoginRequest {
     pub username: String,
@@ -56,6 +58,10 @@ pub struct JobView {
     pub priority: i32,
     pub created_at: DateTime<Utc>,
     pub est_completion: Option<DateTime<Utc>>,
+    pub progress: f64,
+    pub speed: i64,
+    pub cracked: i32,
+    pub total: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -66,6 +72,8 @@ pub struct TaskView {
     pub state: TaskState,
     pub progress: f64,
     pub speed: i64,
+    pub keyspace_offset: i64,
+    pub keyspace_len: i64,
     pub eta: Option<DateTime<Utc>>,
 }
 
@@ -118,6 +126,72 @@ pub struct Problem {
     pub detail: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DeviceView {
+    pub name: String,
+    pub kind: String,
+    pub temp: i32,
+    pub util: i32,
+    pub mem_used: i64,
+    pub mem_total: i64,
+    pub pstate: String,
+    pub power_w: i32,
+    pub fan: i32,
+    /// Core/graphics clock in MHz.
+    pub clock_mhz: i32,
+    /// Memory clock in MHz.
+    pub mem_clock_mhz: i32,
+    pub hashrate: i64,
+}
+
+/// One historical telemetry sample for a device, from `metric_samples`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DeviceSample {
+    pub ts: DateTime<Utc>,
+    pub temp: i32,
+    pub util: i32,
+    pub mem_used: i64,
+    pub mem_total: i64,
+    pub pstate: String,
+    pub power_w: i32,
+    pub fan: i32,
+    pub clock_mhz: i32,
+    pub mem_clock_mhz: i32,
+    pub hashrate: i64,
+}
+
+/// Server-sent event payloads streamed from `GET /events`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(tag = "type")]
+pub enum Event {
+    JobUpdated {
+        job_id: Uuid,
+        #[schema(value_type = String)]
+        state: JobState,
+    },
+    TaskUpdated {
+        job_id: Uuid,
+        task_id: Uuid,
+        progress: f64,
+        speed: i64,
+        eta: Option<DateTime<Utc>>,
+    },
+    HashCracked {
+        hashlist_id: Uuid,
+        hash: String,
+    },
+}
+
+impl Event {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Event::JobUpdated { .. } => "JobUpdated",
+            Event::TaskUpdated { .. } => "TaskUpdated",
+            Event::HashCracked { .. } => "HashCracked",
+        }
+    }
+}
+
 #[derive(OpenApi)]
 #[openapi(
     info(
@@ -138,7 +212,15 @@ pub struct Problem {
         CrackedHash,
         FileView,
         UserCreate,
-        Problem
+        Problem,
+        Event,
+        DeviceView,
+        DeviceSample,
+        agent::AgentClaimCreate,
+        agent::AgentClaim,
+        agent::EnrollRequest,
+        agent::EnrollResponse,
+        agent::AgentInfo
     ))
 )]
 pub struct ApiDoc;

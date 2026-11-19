@@ -23,6 +23,7 @@ pub enum Capability {
     ViewStats,
     ViewJobs,
     ManageDirectory,
+    ManageAgents,
 }
 
 impl Role {
@@ -37,8 +38,9 @@ impl Role {
                 ViewStats,
                 ViewJobs,
                 ManageDirectory,
+                ManageAgents,
             ],
-            Role::Admin => &[ManageUsers],
+            Role::Admin => &[ManageUsers, ManageAgents],
             Role::Operator => &[SubmitJobs, Ingest, ViewPlaintext, ViewStats, ViewJobs],
             Role::Viewer => &[ViewStats, ViewJobs],
         }
@@ -116,6 +118,9 @@ mod tests {
         assert!(!Role::Viewer.has(Capability::SubmitJobs));
         assert!(Role::Viewer.has(Capability::ViewJobs));
         assert!(Role::Superadmin.has(Capability::ManageDirectory));
+        assert!(Role::Superadmin.has(Capability::ManageAgents));
+        assert!(Role::Admin.has(Capability::ManageAgents));
+        assert!(!Role::Operator.has(Capability::ManageAgents));
     }
 
     #[test]

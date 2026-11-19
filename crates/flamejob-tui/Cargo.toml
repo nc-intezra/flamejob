@@ -1,0 +1,25 @@
+[package]
+name = "flamejob-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "flamejob-tui"
+path = "src/main.rs"
+
+[[bin]]
+name = "tui-shot"
+path = "src/bin/shot.rs"
+
+[dependencies]
+flamejob-api = { path = "../flamejob-api" }
+flamejob-client = { path = "../flamejob-client" }
+ratatui = "0.29"
+crossterm = "0.28"
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }

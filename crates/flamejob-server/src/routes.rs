@@ -1,11 +1,16 @@
-use axum::extract::{Path, State};
+use axum::extract::{Multipart, Path, State};
 use axum::http::StatusCode;
-use axum::routing::{get, post};
+use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use chrono::Utc;
 use flamejob_api::*;
-use flamejob_core::{Capability, JobState};
-use flamejob_db::models::{HashlistRow, JobRow};
+use flamejob_core::{Capability, JobState, TaskState};
+use flamejob_db::models::HashlistRow;
+use sha2::{Digest, Sha256};
+use std::path::PathBuf;
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::StreamExt;
 use uuid::Uuid;
 
 use crate::auth::{self, AuthUser};
@@ -16,15 +21,27 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/metrics", get(metrics))
+        .route("/devices", get(list_devices))
+        .route("/devices/:name/history", get(device_history))
+        .route("/agents", get(crate::agent::list_agents))
+        .route("/agent/enroll", post(crate::agent::enroll))
+        .route("/agent/stream", get(crate::agent::agent_stream))
+        .route("/admin/agent-claims", post(crate::agent::create_claim))
         .route("/openapi.json", get(openapi))
         .route("/auth/login", post(login))
         .route("/auth/me", get(me))
         .route("/jobs", get(list_jobs).post(create_job))
         .route("/jobs/:id", get(get_job).patch(patch_job))
+        .route("/jobs/:id/tasks", get(list_job_tasks))
         .route("/jobs/:id/pause", post(pause_job))
         .route("/jobs/:id/resume", post(resume_job))
         .route("/jobs/:id/cancel", post(cancel_job))
         .route("/hashlists", get(list_hashlists).post(create_hashlist))
+        .route("/hashlists/:id/cracked", get(list_cracked))
+        .route("/hashlists/:id/hashes", post(import_hashes))
+        .route("/files", get(list_files).post(upload_file))
+        .route("/files/:id", delete(delete_file))
+        .route("/events", get(events))
         .route("/admin/users", post(create_user))
         .with_state(state)
 }
@@ -96,14 +113,11 @@ async fn list_jobs(
     auth: AuthUser,
 ) -> Result<Json<Vec<JobView>>, AppError> {
     auth.require(Capability::ViewJobs)?;
-    let rows: Vec<JobRow> = sqlx::query_as(
-        "SELECT id, name, owner_user_id, hashlist_id, attack_mode, config, priority, \
-         state::text AS state, est_completion, error, created_at, started_at, finished_at \
-         FROM jobs ORDER BY priority, created_at",
-    )
-    .fetch_all(&state.db)
-    .await?;
-    Ok(Json(rows.iter().map(job_view).collect()))
+    let rows: Vec<JobAgg> =
+        sqlx::query_as(&format!("{JOB_SELECT} ORDER BY j.priority, j.created_at"))
+            .fetch_all(&state.db)
+            .await?;
+    Ok(Json(rows.into_iter().map(job_view).collect()))
 }
 
 async fn create_job(
@@ -129,6 +143,15 @@ async fn create_job(
     .bind(priority)
     .execute(&state.db)
     .await?;
+    let total: i32 = sqlx::query_scalar("SELECT total FROM hashlists WHERE id = $1")
+        .bind(body.hashlist_id)
+        .fetch_optional(&state.db)
+        .await?
+        .unwrap_or(0);
+    state.publish(Event::JobUpdated {
+        job_id: id,
+        state: JobState::Queued,
+    });
     let view = JobView {
         id,
         name: body.name,
@@ -136,6 +159,10 @@ async fn create_job(
         priority,
         created_at: Utc::now(),
         est_completion: None,
+        progress: 0.0,
+        speed: 0,
+        cracked: 0,
+        total,
     };
     Ok((StatusCode::CREATED, Json(view)))
 }
@@ -146,16 +173,12 @@ async fn get_job(
     Path(id): Path<Uuid>,
 ) -> Result<Json<JobView>, AppError> {
     auth.require(Capability::ViewJobs)?;
-    let row: Option<JobRow> = sqlx::query_as(
-        "SELECT id, name, owner_user_id, hashlist_id, attack_mode, config, priority, \
-         state::text AS state, est_completion, error, created_at, started_at, finished_at \
-         FROM jobs WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_optional(&state.db)
-    .await?;
+    let row: Option<JobAgg> = sqlx::query_as(&format!("{JOB_SELECT} WHERE j.id = $1"))
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?;
     let row = row.ok_or_else(|| AppError::NotFound("job not found".into()))?;
-    Ok(Json(job_view(&row)))
+    Ok(Json(job_view(row)))
 }
 
 #[derive(serde::Deserialize)]
@@ -186,7 +209,7 @@ async fn resume_job(
     a: AuthUser,
     p: Path<Uuid>,
 ) -> Result<StatusCode, AppError> {
-    set_job_state(s, a, p, JobState::Running).await
+    set_job_state(s, a, p, JobState::Queued).await
 }
 async fn cancel_job(
     s: State<AppState>,
@@ -212,6 +235,10 @@ async fn set_job_state(
         .bind(id)
         .execute(&state.db)
         .await?;
+    state.publish(Event::JobUpdated {
+        job_id: id,
+        state: to,
+    });
     Ok(StatusCode::ACCEPTED)
 }
 
@@ -298,6 +325,312 @@ async fn create_user(
     Ok(StatusCode::CREATED)
 }
 
+async fn list_cracked(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<CrackedHash>>, AppError> {
+    auth.require(Capability::ViewPlaintext)?;
+    let rows: Vec<(String, Option<String>, Option<Vec<u8>>)> = sqlx::query_as(
+        "SELECT hash, salt, plain FROM hashes WHERE hashlist_id = $1 AND plain IS NOT NULL",
+    )
+    .bind(id)
+    .fetch_all(&state.db)
+    .await?;
+    let out = rows
+        .into_iter()
+        .map(|(hash, salt, plain)| {
+            let plain = plain
+                .and_then(|b| state.cipher.decrypt(&b))
+                .and_then(|v| String::from_utf8(v).ok())
+                .unwrap_or_default();
+            CrackedHash { hash, salt, plain }
+        })
+        .collect();
+    Ok(Json(out))
+}
+
+#[allow(clippy::type_complexity)]
+async fn list_devices(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> Result<Json<Vec<flamejob_api::DeviceView>>, AppError> {
+    auth.require(Capability::ViewStats)?;
+    // The current_devices snapshot is fed by both the local collector and the
+    // remote-agent telemetry ingest, so it shows every device in one place.
+    let rows: Vec<(
+        String,
+        String,
+        Option<i32>,
+        Option<i32>,
+        Option<i64>,
+        Option<i64>,
+        Option<String>,
+        Option<i32>,
+        Option<i32>,
+        Option<i32>,
+        Option<i32>,
+        Option<i64>,
+    )> = sqlx::query_as(
+        "SELECT name, kind, temp, util, mem_used, mem_total, pstate, power_w, fan, \
+         clock_mhz, mem_clock_mhz, hashrate FROM current_devices ORDER BY kind DESC, name",
+    )
+    .fetch_all(&state.db)
+    .await?;
+    if rows.is_empty() {
+        // No sample persisted yet (fresh start): fall back to the in-memory snapshot.
+        return Ok(Json(state.devices.read().await.clone()));
+    }
+    let out = rows
+        .into_iter()
+        .map(|r| flamejob_api::DeviceView {
+            name: r.0,
+            kind: r.1,
+            temp: r.2.unwrap_or(0),
+            util: r.3.unwrap_or(0),
+            mem_used: r.4.unwrap_or(0),
+            mem_total: r.5.unwrap_or(0),
+            pstate: r.6.unwrap_or_default(),
+            power_w: r.7.unwrap_or(0),
+            fan: r.8.unwrap_or(0),
+            clock_mhz: r.9.unwrap_or(0),
+            mem_clock_mhz: r.10.unwrap_or(0),
+            hashrate: r.11.unwrap_or(0),
+        })
+        .collect();
+    Ok(Json(out))
+}
+
+#[allow(clippy::type_complexity)]
+async fn device_history(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(name): Path<String>,
+) -> Result<Json<Vec<DeviceSample>>, AppError> {
+    auth.require(Capability::ViewStats)?;
+    let limit = state.cfg.telemetry.history_limit.clamp(1, 10_000);
+    let rows: Vec<(
+        chrono::DateTime<chrono::Utc>,
+        Option<i32>,
+        Option<i32>,
+        Option<i64>,
+        Option<i64>,
+        Option<String>,
+        Option<i32>,
+        Option<i32>,
+        Option<i32>,
+        Option<i32>,
+        Option<i64>,
+    )> = sqlx::query_as(
+        "SELECT ts, temp, util, mem_used, mem_total, pstate, power_w, fan, clock_mhz, mem_clock_mhz, hashrate \
+         FROM metric_samples WHERE name = $1 ORDER BY ts DESC LIMIT $2",
+    )
+    .bind(&name)
+    .bind(limit)
+    .fetch_all(&state.db)
+    .await?;
+    let out = rows
+        .into_iter()
+        .map(|r| DeviceSample {
+            ts: r.0,
+            temp: r.1.unwrap_or(0),
+            util: r.2.unwrap_or(0),
+            mem_used: r.3.unwrap_or(0),
+            mem_total: r.4.unwrap_or(0),
+            pstate: r.5.unwrap_or_default(),
+            power_w: r.6.unwrap_or(0),
+            fan: r.7.unwrap_or(0),
+            clock_mhz: r.8.unwrap_or(0),
+            mem_clock_mhz: r.9.unwrap_or(0),
+            hashrate: r.10.unwrap_or(0),
+        })
+        .collect();
+    Ok(Json(out))
+}
+
+async fn import_hashes(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+    body: String,
+) -> Result<Json<HashlistView>, AppError> {
+    auth.require(Capability::Ingest)?;
+    let hash_type: Option<i32> =
+        sqlx::query_scalar("SELECT hash_type FROM hashlists WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await?;
+    let hash_type = hash_type.ok_or_else(|| AppError::NotFound("hashlist not found".into()))?;
+    for line in body.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        sqlx::query("INSERT INTO hashes (hashlist_id, hash) VALUES ($1, $2)")
+            .bind(id)
+            .bind(line)
+            .execute(&state.db)
+            .await?;
+    }
+    let (total, cracked): (i64, i64) =
+        sqlx::query_as("SELECT count(*), count(plain) FROM hashes WHERE hashlist_id = $1")
+            .bind(id)
+            .fetch_one(&state.db)
+            .await?;
+    sqlx::query("UPDATE hashlists SET total = $1, cracked = $2 WHERE id = $3")
+        .bind(total as i32)
+        .bind(cracked as i32)
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+    let name: String = sqlx::query_scalar("SELECT name FROM hashlists WHERE id = $1")
+        .bind(id)
+        .fetch_one(&state.db)
+        .await?;
+    Ok(Json(HashlistView {
+        id,
+        name,
+        hash_type,
+        total: total as i32,
+        cracked: cracked as i32,
+    }))
+}
+
+async fn list_files(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> Result<Json<Vec<FileView>>, AppError> {
+    auth.require(Capability::ViewJobs)?;
+    let rows: Vec<(Uuid, String, String, i64, String)> = sqlx::query_as(
+        "SELECT id, name, kind::text, size_bytes, sha256 FROM files ORDER BY created_at DESC",
+    )
+    .fetch_all(&state.db)
+    .await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|(id, name, kind, size_bytes, sha256)| FileView {
+                id,
+                name,
+                kind,
+                size_bytes,
+                sha256,
+            })
+            .collect(),
+    ))
+}
+
+async fn upload_file(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    mut multipart: Multipart,
+) -> Result<(StatusCode, Json<FileView>), AppError> {
+    auth.require(Capability::Ingest)?;
+    let mut name: Option<String> = None;
+    let mut kind = "other".to_string();
+    let mut data: Vec<u8> = Vec::new();
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequest(e.to_string()))?
+    {
+        match field.name() {
+            Some("kind") => {
+                kind = field
+                    .text()
+                    .await
+                    .map_err(|e| AppError::BadRequest(e.to_string()))?;
+            }
+            Some("file") => {
+                name = field.file_name().map(|s| s.to_string());
+                data = field
+                    .bytes()
+                    .await
+                    .map_err(|e| AppError::BadRequest(e.to_string()))?
+                    .to_vec();
+            }
+            _ => {}
+        }
+    }
+    if !matches!(kind.as_str(), "wordlist" | "rule" | "mask" | "other") {
+        kind = "other".to_string();
+    }
+    let name = name.ok_or_else(|| AppError::BadRequest("missing file field".into()))?;
+    let id = Uuid::new_v4();
+    let dir = PathBuf::from(&state.cfg.hashcat.data_dir).join("files");
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let path = dir.join(id.to_string());
+    tokio::fs::write(&path, &data)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let sha256 = hex::encode(Sha256::digest(&data));
+    let size_bytes = data.len() as i64;
+    sqlx::query(
+        "INSERT INTO files (id, name, kind, path, size_bytes, sha256, uploaded_by) \
+         VALUES ($1, $2, $3::file_kind, $4, $5, $6, $7)",
+    )
+    .bind(id)
+    .bind(&name)
+    .bind(&kind)
+    .bind(path.display().to_string())
+    .bind(size_bytes)
+    .bind(&sha256)
+    .bind(auth.id)
+    .execute(&state.db)
+    .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(FileView {
+            id,
+            name,
+            kind,
+            size_bytes,
+            sha256,
+        }),
+    ))
+}
+
+async fn delete_file(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, AppError> {
+    auth.require(Capability::Ingest)?;
+    let path: Option<String> = sqlx::query_scalar("SELECT path FROM files WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?;
+    sqlx::query("DELETE FROM files WHERE id = $1")
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+    if let Some(p) = path {
+        let _ = tokio::fs::remove_file(p).await;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn events(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> Result<
+    Sse<impl tokio_stream::Stream<Item = Result<SseEvent, std::convert::Infallible>>>,
+    AppError,
+> {
+    auth.require(Capability::ViewJobs)?;
+    let rx = state.events.subscribe();
+    let stream = BroadcastStream::new(rx).filter_map(|msg| {
+        let ev = msg.ok()?;
+        SseEvent::default()
+            .event(ev.kind())
+            .json_data(&ev)
+            .ok()
+            .map(Ok)
+    });
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
 // ---- helpers ----
 
 fn parse_role(s: &str) -> Option<flamejob_core::Role> {
@@ -308,13 +641,72 @@ fn parse_job_state(s: &str) -> JobState {
     serde_json::from_value(serde_json::Value::String(s.to_string())).unwrap_or(JobState::Queued)
 }
 
-fn job_view(r: &JobRow) -> JobView {
+const JOB_SELECT: &str = "SELECT j.id, j.name, j.state::text, j.priority, j.created_at, \
+    j.est_completion, \
+    COALESCE((SELECT SUM(CASE WHEN t.state='done' THEN GREATEST(t.keyspace_len,1)::float8 \
+        ELSE t.progress*GREATEST(t.keyspace_len,1)::float8 END) \
+        / NULLIF(SUM(GREATEST(t.keyspace_len,1)),0) FROM tasks t WHERE t.job_id=j.id),0)::float8 AS progress, \
+    COALESCE((SELECT SUM(speed) FROM tasks t WHERE t.job_id=j.id AND t.state='running'),0)::int8 AS speed, \
+    h.cracked, h.total \
+    FROM jobs j JOIN hashlists h ON h.id=j.hashlist_id";
+
+type JobAgg = (
+    Uuid,
+    String,
+    String,
+    i32,
+    chrono::DateTime<chrono::Utc>,
+    Option<chrono::DateTime<chrono::Utc>>,
+    f64,
+    i64,
+    i32,
+    i32,
+);
+
+fn job_view(r: JobAgg) -> JobView {
     JobView {
-        id: r.id,
-        name: r.name.clone(),
-        state: parse_job_state(&r.state),
-        priority: r.priority,
-        created_at: r.created_at,
-        est_completion: r.est_completion,
+        id: r.0,
+        name: r.1,
+        state: parse_job_state(&r.2),
+        priority: r.3,
+        created_at: r.4,
+        est_completion: r.5,
+        progress: r.6,
+        speed: r.7,
+        cracked: r.8,
+        total: r.9,
     }
+}
+
+fn parse_task_state(s: &str) -> TaskState {
+    serde_json::from_value(serde_json::Value::String(s.to_string())).unwrap_or(TaskState::Pending)
+}
+
+async fn list_job_tasks(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<TaskView>>, AppError> {
+    auth.require(Capability::ViewJobs)?;
+    let rows: Vec<(Uuid, Uuid, String, f64, i64, i64, i64)> = sqlx::query_as(
+        "SELECT id, job_id, state::text, progress, speed, keyspace_offset, keyspace_len \
+         FROM tasks WHERE job_id = $1 ORDER BY keyspace_offset",
+    )
+    .bind(id)
+    .fetch_all(&state.db)
+    .await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|(id, job_id, st, progress, speed, off, len)| TaskView {
+                id,
+                job_id,
+                state: parse_task_state(&st),
+                progress,
+                speed,
+                keyspace_offset: off,
+                keyspace_len: len,
+                eta: None,
+            })
+            .collect(),
+    ))
 }

@@ -7,6 +7,8 @@ pub struct Config {
     pub auth: AuthCfg,
     pub hashcat: HashcatCfg,
     pub crypto: CryptoCfg,
+    pub scheduler: SchedulerCfg,
+    pub telemetry: TelemetryCfg,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +42,28 @@ pub struct CryptoCfg {
     pub plaintext_key_file: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchedulerCfg {
+    /// Keyspace units per chunk. hashcat's reported keyspace is divided into
+    /// chunks of this size (capped by max_chunks). 0 or an unknown keyspace
+    /// means a single full-keyspace task.
+    pub chunk_size: i64,
+    pub max_chunks: i64,
+    /// "local" runs chunks as hashcat subprocesses on this box; "remote"
+    /// dispatches them to enrolled agents over the WebSocket protocol.
+    pub runner: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelemetryCfg {
+    /// Whether the local GPU/host telemetry collector runs.
+    pub enabled: bool,
+    /// Seconds between metric samples.
+    pub sample_interval_secs: u64,
+    /// Max rows returned by the per-device history endpoint.
+    pub history_limit: i64,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -62,6 +86,16 @@ impl Default for Config {
             },
             crypto: CryptoCfg {
                 plaintext_key_file: None,
+            },
+            scheduler: SchedulerCfg {
+                chunk_size: 50_000_000,
+                max_chunks: 500,
+                runner: "local".into(),
+            },
+            telemetry: TelemetryCfg {
+                enabled: true,
+                sample_interval_secs: 5,
+                history_limit: 500,
             },
         }
     }

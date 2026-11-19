@@ -12,6 +12,20 @@ pub struct Client {
     token: Option<String>,
 }
 
+/// Percent-encode one URL path segment (unreserved chars pass through).
+fn encode_segment(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for &b in s.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 impl Client {
     pub fn new(base: impl Into<String>) -> Self {
         Self {
@@ -122,5 +136,133 @@ impl Client {
             .error_for_status()?
             .json()
             .await?)
+    }
+    pub async fn list_cracked(&self, hashlist_id: Uuid) -> Result<Vec<CrackedHash>> {
+        Ok(self
+            .request(Method::GET, &format!("/hashlists/{hashlist_id}/cracked"))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+    pub async fn list_job_tasks(&self, job_id: Uuid) -> Result<Vec<TaskView>> {
+        Ok(self
+            .request(Method::GET, &format!("/jobs/{job_id}/tasks"))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+    pub async fn list_devices(&self) -> Result<Vec<DeviceView>> {
+        Ok(self
+            .request(Method::GET, "/devices")
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+
+    pub async fn device_history(&self, name: &str) -> Result<Vec<DeviceSample>> {
+        let path = format!("/devices/{}/history", encode_segment(name));
+        Ok(self
+            .request(Method::GET, &path)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+
+    pub async fn import_hashes(&self, hashlist_id: Uuid, text: String) -> Result<HashlistView> {
+        Ok(self
+            .request(Method::POST, &format!("/hashlists/{hashlist_id}/hashes"))
+            .body(text)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+
+    pub async fn upload_file(&self, path: &std::path::Path, kind: &str) -> Result<FileView> {
+        let bytes = std::fs::read(path).context("reading file")?;
+        let fname = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("file")
+            .to_string();
+        let form = reqwest::multipart::Form::new()
+            .text("kind", kind.to_string())
+            .part(
+                "file",
+                reqwest::multipart::Part::bytes(bytes).file_name(fname),
+            );
+        Ok(self
+            .request(Method::POST, "/files")
+            .multipart(form)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+
+    pub async fn list_files(&self) -> Result<Vec<FileView>> {
+        Ok(self
+            .request(Method::GET, "/files")
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+
+    pub async fn delete_file(&self, id: Uuid) -> Result<()> {
+        self.request(Method::DELETE, &format!("/files/{id}"))
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    /// Stream server-sent events, invoking `on_event` with each parsed JSON payload.
+    pub async fn watch_events<F: FnMut(serde_json::Value)>(&self, mut on_event: F) -> Result<()> {
+        use tokio_stream::StreamExt;
+        let resp = self
+            .request(Method::GET, "/events")
+            .send()
+            .await?
+            .error_for_status()?;
+        let mut stream = resp.bytes_stream();
+        let mut buf = String::new();
+        while let Some(chunk) = stream.next().await {
+            buf.push_str(&String::from_utf8_lossy(&chunk?));
+            while let Some(pos) = buf.find("\n\n") {
+                let frame: String = buf.drain(..pos + 2).collect();
+                for line in frame.lines() {
+                    if let Some(data) = line.strip_prefix("data: ") {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
+                            on_event(v);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode_segment;
+
+    #[test]
+    fn encodes_spaces_and_parens() {
+        assert_eq!(encode_segment("GPU0 RTX 4090"), "GPU0%20RTX%204090");
+        assert_eq!(encode_segment("CPU (host)"), "CPU%20%28host%29");
+        assert_eq!(encode_segment("plain-name_1.0~"), "plain-name_1.0~");
     }
 }
