@@ -21,6 +21,8 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/metrics", get(metrics))
+        .route("/devices", get(list_devices))
+        .route("/devices/:name/history", get(device_history))
         .route("/openapi.json", get(openapi))
         .route("/auth/login", post(login))
         .route("/auth/me", get(me))
@@ -339,6 +341,61 @@ async fn list_cracked(
                 .and_then(|v| String::from_utf8(v).ok())
                 .unwrap_or_default();
             CrackedHash { hash, salt, plain }
+        })
+        .collect();
+    Ok(Json(out))
+}
+
+async fn list_devices(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> Result<Json<Vec<flamejob_api::DeviceView>>, AppError> {
+    auth.require(Capability::ViewStats)?;
+    Ok(Json(state.devices.read().await.clone()))
+}
+
+#[allow(clippy::type_complexity)]
+async fn device_history(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(name): Path<String>,
+) -> Result<Json<Vec<DeviceSample>>, AppError> {
+    auth.require(Capability::ViewStats)?;
+    let limit = state.cfg.telemetry.history_limit.clamp(1, 10_000);
+    let rows: Vec<(
+        chrono::DateTime<chrono::Utc>,
+        Option<i32>,
+        Option<i32>,
+        Option<i64>,
+        Option<i64>,
+        Option<String>,
+        Option<i32>,
+        Option<i32>,
+        Option<i32>,
+        Option<i32>,
+        Option<i64>,
+    )> = sqlx::query_as(
+        "SELECT ts, temp, util, mem_used, mem_total, pstate, power_w, fan, clock_mhz, mem_clock_mhz, hashrate \
+         FROM metric_samples WHERE name = $1 ORDER BY ts DESC LIMIT $2",
+    )
+    .bind(&name)
+    .bind(limit)
+    .fetch_all(&state.db)
+    .await?;
+    let out = rows
+        .into_iter()
+        .map(|r| DeviceSample {
+            ts: r.0,
+            temp: r.1.unwrap_or(0),
+            util: r.2.unwrap_or(0),
+            mem_used: r.3.unwrap_or(0),
+            mem_total: r.4.unwrap_or(0),
+            pstate: r.5.unwrap_or_default(),
+            power_w: r.6.unwrap_or(0),
+            fan: r.7.unwrap_or(0),
+            clock_mhz: r.8.unwrap_or(0),
+            mem_clock_mhz: r.9.unwrap_or(0),
+            hashrate: r.10.unwrap_or(0),
         })
         .collect();
     Ok(Json(out))

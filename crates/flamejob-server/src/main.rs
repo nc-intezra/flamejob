@@ -8,6 +8,7 @@ mod metrics;
 mod routes;
 mod scheduler;
 mod state;
+mod telemetry;
 
 use std::net::SocketAddr;
 
@@ -36,6 +37,7 @@ async fn main() -> Result<()> {
     let state = state::AppState::new(cfg.clone(), pool)?;
     bootstrap::ensure_superadmin(&state).await?;
     scheduler::spawn(state.clone());
+    telemetry::spawn(state.clone());
 
     let app = routes::router(state);
     let addr: SocketAddr = cfg.server.bind.parse()?;

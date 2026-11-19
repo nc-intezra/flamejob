@@ -31,4 +31,6 @@ clap = { version = "4", features = ["derive", "env"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart", "stream"] }
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.16", default-features = false }
+nvml-wrapper = "0.10"
+sysinfo = "0.32"
 tokio-stream = { version = "0.1", features = ["sync"] }

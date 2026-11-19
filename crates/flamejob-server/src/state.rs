@@ -6,8 +6,8 @@ use metrics_exporter_prometheus::PrometheusHandle;
 
 use crate::config::Config;
 use crate::crypto::Cipher;
-use flamejob_api::Event;
-use tokio::sync::broadcast;
+use flamejob_api::{DeviceView, Event};
+use tokio::sync::{broadcast, RwLock};
 
 #[derive(Clone)]
 pub struct AppState(Arc<Inner>);
@@ -19,6 +19,7 @@ pub struct Inner {
     pub decode_key: DecodingKey,
     pub metrics: PrometheusHandle,
     pub cipher: Cipher,
+    pub devices: RwLock<Vec<DeviceView>>,
     pub events: broadcast::Sender<Event>,
 }
 
@@ -36,6 +37,7 @@ impl AppState {
             decode_key,
             metrics,
             cipher,
+            devices: RwLock::new(Vec::new()),
             events,
         })))
     }
