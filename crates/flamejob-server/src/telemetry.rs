@@ -29,12 +29,18 @@ pub fn spawn(state: AppState) {
         let mut sys = System::new();
         loop {
             let devices = collect(nvml.as_ref(), &mut sys);
-            export_gauges(&devices);
-            persist(&state, &devices).await;
+            record(&state, &devices).await;
             *state.devices.write().await = devices;
             tokio::time::sleep(interval).await;
         }
     });
+}
+
+/// Export Prometheus gauges and append a sample row for each device. Shared by
+/// the local collector and the remote-agent telemetry ingest path.
+pub(crate) async fn record(state: &AppState, devices: &[DeviceView]) {
+    export_gauges(devices);
+    persist(state, devices).await;
 }
 
 /// Build the current device list: every NVML GPU plus the host CPU/RAM.

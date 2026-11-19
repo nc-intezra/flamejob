@@ -49,6 +49,9 @@ pub struct SchedulerCfg {
     /// means a single full-keyspace task.
     pub chunk_size: i64,
     pub max_chunks: i64,
+    /// "local" runs chunks as hashcat subprocesses on this box; "remote"
+    /// dispatches them to enrolled agents over the WebSocket protocol.
+    pub runner: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,6 +90,7 @@ impl Default for Config {
             scheduler: SchedulerCfg {
                 chunk_size: 50_000_000,
                 max_chunks: 500,
+                runner: "local".into(),
             },
             telemetry: TelemetryCfg {
                 enabled: true,

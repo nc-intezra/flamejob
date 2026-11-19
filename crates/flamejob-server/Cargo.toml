@@ -13,7 +13,7 @@ flamejob-core = { path = "../flamejob-core" }
 flamejob-api = { path = "../flamejob-api" }
 flamejob-db = { path = "../flamejob-db" }
 flamejob-runner = { path = "../flamejob-runner" }
-axum = { workspace = true }
+axum = { workspace = true, features = ["ws"] }
 tokio = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true }
@@ -38,3 +38,7 @@ anyhow = { workspace = true }
 aes-gcm = "0.10"
 sha2 = "0.10"
 hex = "0.4"
+rcgen = { workspace = true }
+pem = "3"
+futures-util = { workspace = true }
+async-trait = { workspace = true }
