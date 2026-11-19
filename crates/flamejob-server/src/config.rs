@@ -1,0 +1,84 @@
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Config {
+    pub server: ServerCfg,
+    pub database: DatabaseCfg,
+    pub auth: AuthCfg,
+    pub hashcat: HashcatCfg,
+    pub crypto: CryptoCfg,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerCfg {
+    pub bind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatabaseCfg {
+    /// 'local' = installer manages a Postgres on this box; 'external' = use dsn.
+    pub mode: String,
+    pub dsn: String,
+    pub max_connections: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthCfg {
+    pub jwt_secret: String,
+    pub token_ttl_hours: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HashcatCfg {
+    pub binary: String,
+    pub data_dir: String,
+    pub workload: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CryptoCfg {
+    pub plaintext_key_file: Option<String>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            server: ServerCfg {
+                bind: "0.0.0.0:8443".into(),
+            },
+            database: DatabaseCfg {
+                mode: "local".into(),
+                dsn: "postgres://flamejob@localhost/flamejob".into(),
+                max_connections: 10,
+            },
+            auth: AuthCfg {
+                jwt_secret: "dev-insecure-change-me".into(),
+                token_ttl_hours: 1,
+            },
+            hashcat: HashcatCfg {
+                binary: "/usr/bin/hashcat".into(),
+                data_dir: "/var/lib/flamejob".into(),
+                workload: 3,
+            },
+            crypto: CryptoCfg {
+                plaintext_key_file: None,
+            },
+        }
+    }
+}
+
+impl Config {
+    pub fn load() -> anyhow::Result<Self> {
+        use figment::{
+            providers::{Env, Format, Serialized, Toml},
+            Figment,
+        };
+        let path = std::env::var("FLAMEJOB_CONFIG")
+            .unwrap_or_else(|_| "/etc/flamejob/flamejob.toml".into());
+        let cfg: Config = Figment::from(Serialized::defaults(Config::default()))
+            .merge(Toml::file(path))
+            .merge(Env::prefixed("FJ_").split("__"))
+            .extract()?;
+        Ok(cfg)
+    }
+}

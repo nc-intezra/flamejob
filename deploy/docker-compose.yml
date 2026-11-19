@@ -1,0 +1,28 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: flamejob
+      POSTGRES_DB: flamejob
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  flamejobd:
+    build: ..
+    depends_on:
+      - postgres
+    environment:
+      FJ_DATABASE__DSN: postgres://flamejob@postgres/flamejob
+      FJ_SERVER__BIND: 0.0.0.0:8443
+      FJ_AUTH__JWT_SECRET: change-me-in-production
+    ports:
+      - "8443:8443"
+    volumes:
+      - flamejob-data:/var/lib/flamejob
+
+volumes:
+  pgdata: {}
+  flamejob-data: {}
