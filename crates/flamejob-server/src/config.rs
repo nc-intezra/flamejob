@@ -7,6 +7,7 @@ pub struct Config {
     pub auth: AuthCfg,
     pub hashcat: HashcatCfg,
     pub crypto: CryptoCfg,
+    pub scheduler: SchedulerCfg,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +41,15 @@ pub struct CryptoCfg {
     pub plaintext_key_file: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchedulerCfg {
+    /// Keyspace units per chunk. hashcat's reported keyspace is divided into
+    /// chunks of this size (capped by max_chunks). 0 or an unknown keyspace
+    /// means a single full-keyspace task.
+    pub chunk_size: i64,
+    pub max_chunks: i64,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -62,6 +72,10 @@ impl Default for Config {
             },
             crypto: CryptoCfg {
                 plaintext_key_file: None,
+            },
+            scheduler: SchedulerCfg {
+                chunk_size: 50_000_000,
+                max_chunks: 500,
             },
         }
     }

@@ -20,3 +20,8 @@ workload = 3
 [crypto]
 # AD-supplied where available, else generated locally by the installer
 plaintext_key_file = "/etc/flamejob/plain.key"
+
+[scheduler]
+# keyspace units per chunk; 0 or unknown keyspace = one task
+chunk_size = 50000000
+max_chunks = 500

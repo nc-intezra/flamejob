@@ -1,7 +1,9 @@
-//! Phase 1 scheduler: claim queued jobs, run hashcat through the Runner, stream
-//! status back into the task/job rows, import cracked hashes (encrypted), and
-//! reconcile cancel/pause requested via the API. One job runs at a time on the
-//! single box.
+//! Phase 1 scheduler with server-side keyspace chunking.
+//!
+//! A job's keyspace (from `hashcat --keyspace`) is divided into chunk tasks,
+//! each run with `--skip`/`--limit`. On the single box chunks run one at a time;
+//! the same task rows are what Phase 3 will distribute across agents. A job
+//! finishes early as soon as every hash is cracked.
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -9,19 +11,33 @@ use std::time::Duration;
 
 use anyhow::anyhow;
 use flamejob_api::JobConfig;
-use flamejob_core::{RunHandle, Runner, RunnerTask, TaskState};
+use flamejob_core::{RunHandle, Runner, RunnerTask, StatusUpdate, TaskState};
 use flamejob_runner::LocalRunner;
 use tokio::sync::{mpsc, Mutex};
 use uuid::Uuid;
 
 use crate::state::AppState;
 
+/// Per-job inputs shared by every chunk of that job.
+struct JobInputs {
+    hash_type: i32,
+    attack_mode: i16,
+    hash_file: String,
+    primary: String,
+    rules: Vec<String>,
+    extra_args: Vec<String>,
+    total_keyspace: i64,
+}
+
 pub struct Scheduler {
     state: AppState,
     runner: Arc<dyn Runner>,
-    running: Mutex<HashMap<Uuid, RunHandle>>,
-    retries: Mutex<HashMap<Uuid, u32>>,
+    running: Mutex<HashMap<Uuid, RunHandle>>, // job_id -> current chunk handle
+    inputs: Mutex<HashMap<Uuid, Arc<JobInputs>>>, // job_id -> shared inputs
+    retries: Mutex<HashMap<Uuid, u32>>,       // task_id -> attempts
     max_retries: u32,
+    chunk_size: i64,
+    max_chunks: i64,
 }
 
 pub fn spawn(state: AppState) {
@@ -30,12 +46,17 @@ pub fn spawn(state: AppState) {
         state.cfg.hashcat.workload,
         state.cfg.hashcat.data_dir.clone(),
     ));
+    let chunk_size = state.cfg.scheduler.chunk_size;
+    let max_chunks = state.cfg.scheduler.max_chunks.max(1);
     let sched = Arc::new(Scheduler {
         state,
         runner,
         running: Mutex::new(HashMap::new()),
+        inputs: Mutex::new(HashMap::new()),
         retries: Mutex::new(HashMap::new()),
         max_retries: 2,
+        chunk_size,
+        max_chunks,
     });
     metrics::gauge!("flamejob_build_info", "version" => env!("CARGO_PKG_VERSION")).set(1.0);
     tokio::spawn(sched.run());
@@ -51,6 +72,27 @@ fn task_state_str(s: TaskState) -> &'static str {
     }
 }
 
+/// Split `total` keyspace into (offset, len) chunks. total <= 0 (unknown) yields
+/// a single full-run chunk (len 0 => no --skip/--limit).
+fn plan_chunks(total: i64, chunk_size: i64, max_chunks: i64) -> Vec<(i64, i64)> {
+    if total <= 0 || chunk_size <= 0 {
+        return vec![(0, 0)];
+    }
+    let mut size = chunk_size;
+    let count = (total + size - 1) / size;
+    if count > max_chunks {
+        size = (total + max_chunks - 1) / max_chunks;
+    }
+    let mut chunks = Vec::new();
+    let mut off = 0;
+    while off < total {
+        let len = size.min(total - off);
+        chunks.push((off, len));
+        off += len;
+    }
+    chunks
+}
+
 impl Scheduler {
     async fn run(self: Arc<Self>) {
         loop {
@@ -62,14 +104,10 @@ impl Scheduler {
     }
 
     async fn tick(self: &Arc<Self>) -> anyhow::Result<()> {
-        // Reconcile cancel/pause requested via the API against live processes.
+        // Reconcile cancel/pause against the live chunk process.
         let ids: Vec<Uuid> = self.running.lock().await.keys().copied().collect();
         for job_id in ids {
-            let st: String = sqlx::query_scalar("SELECT state::text FROM jobs WHERE id = $1")
-                .bind(job_id)
-                .fetch_one(&self.state.db)
-                .await
-                .unwrap_or_default();
+            let st = self.job_state(job_id).await;
             if st == "cancelled" || st == "paused" {
                 let handle = self.running.lock().await.get(&job_id).cloned();
                 if let Some(h) = handle {
@@ -77,18 +115,24 @@ impl Scheduler {
                 }
             }
         }
-        // Capacity: one job at a time on the single box.
+        // One job at a time on the single box. Resume an in-flight job's next
+        // chunk before claiming a new job, so a job's chunks run to completion.
         if self.running.lock().await.is_empty() {
-            self.claim_and_start().await?;
-        }
-        // Refresh Prometheus gauges.
-        if let Ok(by_state) = flamejob_db::count_jobs_by_state(&self.state.db).await {
-            for (state, n) in by_state {
-                metrics::gauge!("flamejob_jobs", "state" => state).set(n as f64);
+            if let Some(job_id) = self.resumable_job().await {
+                if self.inputs.lock().await.contains_key(&job_id) {
+                    self.start_next_chunk(job_id).await;
+                } else {
+                    // Inputs lost (e.g. restart mid-job): re-queue to rebuild.
+                    let _ = sqlx::query("UPDATE jobs SET state = 'queued' WHERE id = $1")
+                        .bind(job_id)
+                        .execute(&self.state.db)
+                        .await;
+                }
+            } else {
+                self.claim_and_start().await?;
             }
         }
-        let running = self.running.lock().await.len() as f64;
-        metrics::gauge!("flamejob_tasks_running").set(running);
+        self.refresh_metrics().await;
         Ok(())
     }
 
@@ -120,6 +164,7 @@ impl Scheduler {
             .bind(e.to_string())
             .execute(&self.state.db)
             .await;
+            self.cleanup(job_id).await;
         }
         Ok(true)
     }
@@ -131,52 +176,52 @@ impl Scheduler {
         attack_mode: i16,
         config: serde_json::Value,
     ) -> anyhow::Result<()> {
-        let task = self
-            .prepare_task(job_id, hashlist_id, attack_mode, config)
+        let inputs = Arc::new(
+            self.prepare_inputs(job_id, hashlist_id, attack_mode, config)
+                .await?,
+        );
+        let chunks = plan_chunks(inputs.total_keyspace, self.chunk_size, self.max_chunks);
+
+        // Fresh set of chunk tasks (also clears a previous run on re-queue).
+        sqlx::query("DELETE FROM tasks WHERE job_id = $1")
+            .bind(job_id)
+            .execute(&self.state.db)
             .await?;
-        sqlx::query(
-            "INSERT INTO tasks (id, job_id, runner_id, keyspace_offset, keyspace_len, state) \
-             VALUES ($1, $2, 'local', $3, $4, 'running')",
-        )
-        .bind(task.task_id)
-        .bind(job_id)
-        .bind(task.keyspace_offset)
-        .bind(task.keyspace_len)
-        .execute(&self.state.db)
-        .await?;
+        for (off, len) in &chunks {
+            sqlx::query(
+                "INSERT INTO tasks (id, job_id, runner_id, keyspace_offset, keyspace_len, state) \
+                 VALUES ($1, $2, 'local', $3, $4, 'pending')",
+            )
+            .bind(Uuid::new_v4())
+            .bind(job_id)
+            .bind(off)
+            .bind(len)
+            .execute(&self.state.db)
+            .await?;
+        }
+        self.inputs.lock().await.insert(job_id, inputs);
         sqlx::query("UPDATE jobs SET state = 'running', started_at = now() WHERE id = $1")
             .bind(job_id)
             .execute(&self.state.db)
             .await?;
-
-        let (tx, rx) = mpsc::channel(64);
-        let handle = self
-            .runner
-            .start(&task, tx)
-            .await
-            .map_err(|e| anyhow!(e.to_string()))?;
-        self.running.lock().await.insert(job_id, handle);
-
-        let me = self.clone();
-        tokio::spawn(me.consume(job_id, task.task_id, rx));
-        tracing::info!(%job_id, task_id = %task.task_id, "job running");
+        tracing::info!(%job_id, chunks = chunks.len(), "job running (chunked)");
+        self.start_next_chunk(job_id).await;
         Ok(())
     }
 
-    async fn prepare_task(
+    async fn prepare_inputs(
         &self,
         job_id: Uuid,
         hashlist_id: Uuid,
         attack_mode: i16,
         config: serde_json::Value,
-    ) -> anyhow::Result<RunnerTask> {
+    ) -> anyhow::Result<JobInputs> {
         let cfg: JobConfig = serde_json::from_value(config)?;
         let hash_type: i32 = sqlx::query_scalar("SELECT hash_type FROM hashlists WHERE id = $1")
             .bind(hashlist_id)
             .fetch_one(&self.state.db)
             .await?;
 
-        // Write the hashlist to a file for hashcat.
         let hashes: Vec<(String, Option<String>)> =
             sqlx::query_as("SELECT hash, salt FROM hashes WHERE hashlist_id = $1")
                 .bind(hashlist_id)
@@ -201,7 +246,6 @@ impl Scheduler {
         }
         tokio::fs::write(&hash_file, body).await?;
 
-        // Resolve the primary attack input (wordlist path or mask).
         let primary = if let Some(mask) = cfg.mask.clone() {
             mask
         } else if let Some(wid) = cfg.wordlist_file_id {
@@ -211,7 +255,6 @@ impl Scheduler {
         } else {
             return Err(anyhow!("job has neither wordlist nor mask"));
         };
-
         let mut rules = Vec::new();
         for rid in &cfg.rule_file_ids {
             if let Some(p) = file_path(&self.state.db, *rid).await? {
@@ -219,24 +262,99 @@ impl Scheduler {
             }
         }
 
-        Ok(RunnerTask {
-            task_id: Uuid::new_v4(),
+        let hash_file = hash_file.display().to_string();
+        let probe = RunnerTask {
+            task_id: Uuid::nil(),
             hash_type,
             attack_mode,
-            hash_file: hash_file.display().to_string(),
-            primary,
-            rules,
+            hash_file: hash_file.clone(),
+            primary: primary.clone(),
+            rules: rules.clone(),
             keyspace_offset: 0,
             keyspace_len: 0,
+            extra_args: cfg.extra_args.clone(),
+        };
+        let total_keyspace = self
+            .runner
+            .keyspace(&probe)
+            .await
+            .map(|k| k as i64)
+            .unwrap_or(0);
+
+        Ok(JobInputs {
+            hash_type,
+            attack_mode,
+            hash_file,
+            primary,
+            rules,
             extra_args: cfg.extra_args,
+            total_keyspace,
         })
+    }
+
+    /// Start the lowest-offset pending chunk, or finalize the job if none remain.
+    /// Returns true if a chunk was started.
+    async fn start_next_chunk(self: &Arc<Self>, job_id: Uuid) -> bool {
+        let inputs = match self.inputs.lock().await.get(&job_id).cloned() {
+            Some(i) => i,
+            None => return false,
+        };
+        let next: Option<(Uuid, i64, i64)> = sqlx::query_as(
+            "SELECT id, keyspace_offset, keyspace_len FROM tasks \
+             WHERE job_id = $1 AND state = 'pending' ORDER BY keyspace_offset LIMIT 1",
+        )
+        .bind(job_id)
+        .fetch_optional(&self.state.db)
+        .await
+        .ok()
+        .flatten();
+        let Some((task_id, offset, len)) = next else {
+            let (total, cracked) = self.counts(job_id).await;
+            let st = if total > 0 && cracked >= total {
+                "completed"
+            } else {
+                "exhausted"
+            };
+            self.set_job_terminal(job_id, st, None).await;
+            return false;
+        };
+
+        let task = RunnerTask {
+            task_id,
+            hash_type: inputs.hash_type,
+            attack_mode: inputs.attack_mode,
+            hash_file: inputs.hash_file.clone(),
+            primary: inputs.primary.clone(),
+            rules: inputs.rules.clone(),
+            keyspace_offset: offset,
+            keyspace_len: len,
+            extra_args: inputs.extra_args.clone(),
+        };
+        let _ = self.set_task(task_id, "running").await;
+        let (tx, rx) = mpsc::channel(64);
+        match self.runner.start(&task, tx).await {
+            Ok(handle) => {
+                self.running.lock().await.insert(job_id, handle);
+                let me = self.clone();
+                tokio::spawn(me.consume(job_id, task_id, rx));
+                tracing::info!(%job_id, %task_id, offset, len, "chunk running");
+                true
+            }
+            Err(e) => {
+                tracing::error!(%job_id, %task_id, error = %e, "chunk failed to start");
+                let _ = self.set_task(task_id, "failed").await;
+                self.set_job_terminal(job_id, "error", Some("chunk failed to start"))
+                    .await;
+                false
+            }
+        }
     }
 
     async fn consume(
         self: Arc<Self>,
         job_id: Uuid,
         task_id: Uuid,
-        mut rx: mpsc::Receiver<flamejob_core::StatusUpdate>,
+        mut rx: mpsc::Receiver<StatusUpdate>,
     ) {
         let mut last = TaskState::Running;
         while let Some(u) = rx.recv().await {
@@ -258,76 +376,104 @@ impl Scheduler {
             }
             last = u.state;
         }
-        self.finalize(job_id, task_id, last).await;
-        self.running.lock().await.remove(&job_id);
+        self.finalize_chunk(job_id, task_id, last).await;
     }
 
-    async fn finalize(&self, job_id: Uuid, task_id: Uuid, last: TaskState) {
-        let cur: String = sqlx::query_scalar("SELECT state::text FROM jobs WHERE id = $1")
-            .bind(job_id)
-            .fetch_one(&self.state.db)
-            .await
-            .unwrap_or_else(|_| "error".into());
-
-        match cur.as_str() {
+    async fn finalize_chunk(self: &Arc<Self>, job_id: Uuid, task_id: Uuid, last: TaskState) {
+        match self.job_state(job_id).await.as_str() {
             "cancelled" => {
                 let _ = self.set_task(task_id, "failed").await;
+                self.cleanup(job_id).await;
+                return;
             }
             "paused" => {
                 let _ = self.set_task(task_id, "paused").await;
+                self.cleanup(job_id).await;
+                return;
             }
-            _ => {
-                if last == TaskState::Done {
-                    let _ = self.import_cracked(job_id, task_id).await;
-                    let counts: (i32, i32) = sqlx::query_as(
-                        "SELECT h.total, h.cracked FROM hashlists h \
-                         JOIN jobs j ON j.hashlist_id = h.id WHERE j.id = $1",
-                    )
-                    .bind(job_id)
-                    .fetch_one(&self.state.db)
-                    .await
-                    .unwrap_or((0, 0));
-                    let final_state = if counts.0 > 0 && counts.1 >= counts.0 {
-                        "completed"
-                    } else {
-                        "exhausted"
-                    };
-                    let _ = self.set_task(task_id, "done").await;
-                    let _ = sqlx::query(
-                        "UPDATE jobs SET state = $2::job_state, finished_at = now() WHERE id = $1",
-                    )
-                    .bind(job_id)
-                    .bind(final_state)
-                    .execute(&self.state.db)
+            _ => {}
+        }
+
+        let _ = self.import_cracked(job_id, task_id).await;
+
+        // Finish early if every hash is cracked.
+        let (total, cracked) = self.counts(job_id).await;
+        if total > 0 && cracked >= total {
+            let _ = self.set_task(task_id, "done").await;
+            self.set_job_terminal(job_id, "completed", None).await;
+            return;
+        }
+
+        if last == TaskState::Done {
+            let _ = self.set_task(task_id, "done").await;
+            // Release the slot; the tick loop starts the next pending chunk
+            // (or finalizes the job when none remain).
+            self.running.lock().await.remove(&job_id);
+        } else {
+            let attempts = {
+                let mut m = self.retries.lock().await;
+                let e = m.entry(task_id).or_insert(0);
+                *e += 1;
+                *e
+            };
+            if attempts <= self.max_retries {
+                let _ = self.set_task(task_id, "pending").await; // re-run this chunk
+                tracing::warn!(%job_id, %task_id, attempts, "chunk failed; retrying");
+                self.running.lock().await.remove(&job_id);
+            } else {
+                let _ = self.set_task(task_id, "failed").await;
+                self.set_job_terminal(job_id, "error", Some("chunk failed after retries"))
                     .await;
-                    self.retries.lock().await.remove(&job_id);
-                } else {
-                    // Process ended without a terminal status => failure; retry.
-                    let attempts = {
-                        let mut m = self.retries.lock().await;
-                        let e = m.entry(job_id).or_insert(0);
-                        *e += 1;
-                        *e
-                    };
-                    let _ = self.set_task(task_id, "failed").await;
-                    if attempts <= self.max_retries {
-                        let _ = sqlx::query("UPDATE jobs SET state = 'queued' WHERE id = $1")
-                            .bind(job_id)
-                            .execute(&self.state.db)
-                            .await;
-                        tracing::warn!(%job_id, attempts, "job failed; re-queued");
-                    } else {
-                        let _ = sqlx::query(
-                            "UPDATE jobs SET state = 'error', error = 'runner failed after retries', finished_at = now() WHERE id = $1",
-                        )
-                        .bind(job_id)
-                        .execute(&self.state.db)
-                        .await;
-                        self.retries.lock().await.remove(&job_id);
-                    }
-                }
             }
         }
+    }
+
+    async fn resumable_job(&self) -> Option<Uuid> {
+        sqlx::query_scalar(
+            "SELECT j.id FROM jobs j WHERE j.state = 'running' \
+             AND EXISTS (SELECT 1 FROM tasks t WHERE t.job_id = j.id AND t.state = 'pending') \
+             ORDER BY j.priority, j.created_at LIMIT 1",
+        )
+        .fetch_optional(&self.state.db)
+        .await
+        .ok()
+        .flatten()
+    }
+
+    async fn set_job_terminal(&self, job_id: Uuid, state: &str, error: Option<&str>) {
+        let _ = sqlx::query(
+            "UPDATE jobs SET state = $2::job_state, error = $3, finished_at = now() WHERE id = $1",
+        )
+        .bind(job_id)
+        .bind(state)
+        .bind(error)
+        .execute(&self.state.db)
+        .await;
+        self.cleanup(job_id).await;
+        tracing::info!(%job_id, state, "job finalized");
+    }
+
+    async fn cleanup(&self, job_id: Uuid) {
+        self.running.lock().await.remove(&job_id);
+        self.inputs.lock().await.remove(&job_id);
+    }
+
+    async fn counts(&self, job_id: Uuid) -> (i32, i32) {
+        sqlx::query_as(
+            "SELECT h.total, h.cracked FROM hashlists h JOIN jobs j ON j.hashlist_id = h.id WHERE j.id = $1",
+        )
+        .bind(job_id)
+        .fetch_one(&self.state.db)
+        .await
+        .unwrap_or((0, 0))
+    }
+
+    async fn job_state(&self, job_id: Uuid) -> String {
+        sqlx::query_scalar("SELECT state::text FROM jobs WHERE id = $1")
+            .bind(job_id)
+            .fetch_one(&self.state.db)
+            .await
+            .unwrap_or_else(|_| "error".into())
     }
 
     async fn set_task(&self, task_id: Uuid, state: &str) -> Result<(), sqlx::Error> {
@@ -375,6 +521,16 @@ impl Scheduler {
         .await;
         Ok(())
     }
+
+    async fn refresh_metrics(&self) {
+        if let Ok(by_state) = flamejob_db::count_jobs_by_state(&self.state.db).await {
+            for (state, n) in by_state {
+                metrics::gauge!("flamejob_jobs", "state" => state).set(n as f64);
+            }
+        }
+        let running = self.running.lock().await.len() as f64;
+        metrics::gauge!("flamejob_tasks_running").set(running);
+    }
 }
 
 async fn file_path(db: &flamejob_db::Db, id: Uuid) -> anyhow::Result<Option<String>> {
@@ -382,4 +538,20 @@ async fn file_path(db: &flamejob_db::Db, id: Uuid) -> anyhow::Result<Option<Stri
         .bind(id)
         .fetch_optional(db)
         .await?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::plan_chunks;
+
+    #[test]
+    fn chunking_splits_keyspace() {
+        assert_eq!(plan_chunks(40, 15, 500), vec![(0, 15), (15, 15), (30, 10)]);
+        assert_eq!(plan_chunks(0, 15, 500), vec![(0, 0)]); // unknown keyspace -> one chunk
+        assert_eq!(plan_chunks(10, 15, 500), vec![(0, 10)]); // smaller than chunk size
+                                                             // max_chunks cap widens the chunk size
+        let c = plan_chunks(1000, 1, 4);
+        assert!(c.len() <= 4);
+        assert_eq!(c.iter().map(|(_, l)| l).sum::<i64>(), 1000);
+    }
 }
