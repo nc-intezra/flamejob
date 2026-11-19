@@ -124,6 +124,20 @@ pub struct Problem {
     pub detail: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DeviceView {
+    pub name: String,
+    pub kind: String,
+    pub temp: i32,
+    pub util: i32,
+    pub mem_used: i64,
+    pub mem_total: i64,
+    pub pstate: String,
+    pub power_w: i32,
+    pub fan: i32,
+    pub hashrate: i64,
+}
+
 #[derive(OpenApi)]
 #[openapi(
     info(

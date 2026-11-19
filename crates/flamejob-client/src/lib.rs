@@ -141,4 +141,13 @@ impl Client {
             .json()
             .await?)
     }
+    pub async fn list_devices(&self) -> Result<Vec<DeviceView>> {
+        Ok(self
+            .request(Method::GET, "/devices")
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
 }

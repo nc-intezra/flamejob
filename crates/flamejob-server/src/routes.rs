@@ -16,6 +16,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/metrics", get(metrics))
+        .route("/devices", get(list_devices))
         .route("/openapi.json", get(openapi))
         .route("/auth/login", post(login))
         .route("/auth/me", get(me))
@@ -325,6 +326,14 @@ async fn list_cracked(
         })
         .collect();
     Ok(Json(out))
+}
+
+async fn list_devices(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> Result<Json<Vec<flamejob_api::DeviceView>>, AppError> {
+    auth.require(Capability::ViewStats)?;
+    Ok(Json(state.devices.read().await.clone()))
 }
 
 // ---- helpers ----
