@@ -1,11 +1,16 @@
-use axum::extract::{Path, State};
+use axum::extract::{Multipart, Path, State};
 use axum::http::StatusCode;
-use axum::routing::{get, post};
+use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use chrono::Utc;
 use flamejob_api::*;
 use flamejob_core::{Capability, JobState, TaskState};
 use flamejob_db::models::HashlistRow;
+use sha2::{Digest, Sha256};
+use std::path::PathBuf;
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::StreamExt;
 use uuid::Uuid;
 
 use crate::auth::{self, AuthUser};
@@ -27,6 +32,10 @@ pub fn router(state: AppState) -> Router {
         .route("/jobs/:id/cancel", post(cancel_job))
         .route("/hashlists", get(list_hashlists).post(create_hashlist))
         .route("/hashlists/:id/cracked", get(list_cracked))
+        .route("/hashlists/:id/hashes", post(import_hashes))
+        .route("/files", get(list_files).post(upload_file))
+        .route("/files/:id", delete(delete_file))
+        .route("/events", get(events))
         .route("/admin/users", post(create_user))
         .with_state(state)
 }
@@ -133,6 +142,10 @@ async fn create_job(
         .fetch_optional(&state.db)
         .await?
         .unwrap_or(0);
+    state.publish(Event::JobUpdated {
+        job_id: id,
+        state: JobState::Queued,
+    });
     let view = JobView {
         id,
         name: body.name,
@@ -216,6 +229,10 @@ async fn set_job_state(
         .bind(id)
         .execute(&state.db)
         .await?;
+    state.publish(Event::JobUpdated {
+        job_id: id,
+        state: to,
+    });
     Ok(StatusCode::ACCEPTED)
 }
 
@@ -325,6 +342,189 @@ async fn list_cracked(
         })
         .collect();
     Ok(Json(out))
+}
+
+async fn import_hashes(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+    body: String,
+) -> Result<Json<HashlistView>, AppError> {
+    auth.require(Capability::Ingest)?;
+    let hash_type: Option<i32> =
+        sqlx::query_scalar("SELECT hash_type FROM hashlists WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&state.db)
+            .await?;
+    let hash_type = hash_type.ok_or_else(|| AppError::NotFound("hashlist not found".into()))?;
+    for line in body.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        sqlx::query("INSERT INTO hashes (hashlist_id, hash) VALUES ($1, $2)")
+            .bind(id)
+            .bind(line)
+            .execute(&state.db)
+            .await?;
+    }
+    let (total, cracked): (i64, i64) =
+        sqlx::query_as("SELECT count(*), count(plain) FROM hashes WHERE hashlist_id = $1")
+            .bind(id)
+            .fetch_one(&state.db)
+            .await?;
+    sqlx::query("UPDATE hashlists SET total = $1, cracked = $2 WHERE id = $3")
+        .bind(total as i32)
+        .bind(cracked as i32)
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+    let name: String = sqlx::query_scalar("SELECT name FROM hashlists WHERE id = $1")
+        .bind(id)
+        .fetch_one(&state.db)
+        .await?;
+    Ok(Json(HashlistView {
+        id,
+        name,
+        hash_type,
+        total: total as i32,
+        cracked: cracked as i32,
+    }))
+}
+
+async fn list_files(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> Result<Json<Vec<FileView>>, AppError> {
+    auth.require(Capability::ViewJobs)?;
+    let rows: Vec<(Uuid, String, String, i64, String)> = sqlx::query_as(
+        "SELECT id, name, kind::text, size_bytes, sha256 FROM files ORDER BY created_at DESC",
+    )
+    .fetch_all(&state.db)
+    .await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|(id, name, kind, size_bytes, sha256)| FileView {
+                id,
+                name,
+                kind,
+                size_bytes,
+                sha256,
+            })
+            .collect(),
+    ))
+}
+
+async fn upload_file(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    mut multipart: Multipart,
+) -> Result<(StatusCode, Json<FileView>), AppError> {
+    auth.require(Capability::Ingest)?;
+    let mut name: Option<String> = None;
+    let mut kind = "other".to_string();
+    let mut data: Vec<u8> = Vec::new();
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequest(e.to_string()))?
+    {
+        match field.name() {
+            Some("kind") => {
+                kind = field
+                    .text()
+                    .await
+                    .map_err(|e| AppError::BadRequest(e.to_string()))?;
+            }
+            Some("file") => {
+                name = field.file_name().map(|s| s.to_string());
+                data = field
+                    .bytes()
+                    .await
+                    .map_err(|e| AppError::BadRequest(e.to_string()))?
+                    .to_vec();
+            }
+            _ => {}
+        }
+    }
+    if !matches!(kind.as_str(), "wordlist" | "rule" | "mask" | "other") {
+        kind = "other".to_string();
+    }
+    let name = name.ok_or_else(|| AppError::BadRequest("missing file field".into()))?;
+    let id = Uuid::new_v4();
+    let dir = PathBuf::from(&state.cfg.hashcat.data_dir).join("files");
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let path = dir.join(id.to_string());
+    tokio::fs::write(&path, &data)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let sha256 = hex::encode(Sha256::digest(&data));
+    let size_bytes = data.len() as i64;
+    sqlx::query(
+        "INSERT INTO files (id, name, kind, path, size_bytes, sha256, uploaded_by) \
+         VALUES ($1, $2, $3::file_kind, $4, $5, $6, $7)",
+    )
+    .bind(id)
+    .bind(&name)
+    .bind(&kind)
+    .bind(path.display().to_string())
+    .bind(size_bytes)
+    .bind(&sha256)
+    .bind(auth.id)
+    .execute(&state.db)
+    .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(FileView {
+            id,
+            name,
+            kind,
+            size_bytes,
+            sha256,
+        }),
+    ))
+}
+
+async fn delete_file(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, AppError> {
+    auth.require(Capability::Ingest)?;
+    let path: Option<String> = sqlx::query_scalar("SELECT path FROM files WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?;
+    sqlx::query("DELETE FROM files WHERE id = $1")
+        .bind(id)
+        .execute(&state.db)
+        .await?;
+    if let Some(p) = path {
+        let _ = tokio::fs::remove_file(p).await;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn events(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> Result<
+    Sse<impl tokio_stream::Stream<Item = Result<SseEvent, std::convert::Infallible>>>,
+    AppError,
+> {
+    auth.require(Capability::ViewJobs)?;
+    let rx = state.events.subscribe();
+    let stream = BroadcastStream::new(rx).filter_map(|msg| {
+        let ev = msg.ok()?;
+        SseEvent::default()
+            .event(ev.kind())
+            .json_data(&ev)
+            .ok()
+            .map(Ok)
+    });
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 // ---- helpers ----
