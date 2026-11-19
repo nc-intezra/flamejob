@@ -8,8 +8,8 @@ use crate::agent::AgentHub;
 use crate::config::Config;
 use crate::crypto::Cipher;
 use crate::pki::Pki;
-use flamejob_api::DeviceView;
-use tokio::sync::RwLock;
+use flamejob_api::{DeviceView, Event};
+use tokio::sync::{broadcast, RwLock};
 
 #[derive(Clone)]
 pub struct AppState(Arc<Inner>);
@@ -24,6 +24,7 @@ pub struct Inner {
     pub devices: RwLock<Vec<DeviceView>>,
     pub agents: Arc<AgentHub>,
     pub pki: Arc<Pki>,
+    pub events: broadcast::Sender<Event>,
 }
 
 impl AppState {
@@ -33,6 +34,7 @@ impl AppState {
         let metrics = crate::metrics::recorder()?;
         let cipher = Cipher::from_bytes(crate::crypto::key_from_config(&cfg));
         let pki = Pki::load_or_create(std::path::Path::new(&cfg.hashcat.data_dir))?;
+        let (events, _) = broadcast::channel(256);
         Ok(Self(Arc::new(Inner {
             cfg,
             db,
@@ -43,7 +45,14 @@ impl AppState {
             devices: RwLock::new(Vec::new()),
             agents: AgentHub::new(),
             pki: Arc::new(pki),
+            events,
         })))
+    }
+}
+
+impl AppState {
+    pub fn publish(&self, ev: Event) {
+        let _ = self.events.send(ev);
     }
 }
 

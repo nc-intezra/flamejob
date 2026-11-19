@@ -47,6 +47,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: HashlistCmd,
     },
+    /// File operations (wordlists, rules, masks)
+    File {
+        #[command(subcommand)]
+        cmd: FileCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -80,6 +85,10 @@ enum JobCmd {
         id: Uuid,
         priority: i32,
     },
+    /// Follow job and task events over SSE
+    Watch {
+        id: Uuid,
+    },
 }
 
 #[derive(Subcommand)]
@@ -93,6 +102,24 @@ enum HashlistCmd {
     },
     /// Show decrypted cracked results (needs ViewPlaintext)
     Cracked {
+        id: Uuid,
+    },
+    /// Import hashes from a file (one per line)
+    Import {
+        id: Uuid,
+        file: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum FileCmd {
+    Add {
+        path: PathBuf,
+        #[arg(long, default_value = "other")]
+        kind: String,
+    },
+    Ls,
+    Rm {
         id: Uuid,
     },
 }
@@ -192,6 +219,20 @@ async fn main() -> Result<()> {
             JobCmd::Resume { id } => client.job_action(id, "resume").await?,
             JobCmd::Cancel { id } => client.job_action(id, "cancel").await?,
             JobCmd::Prio { id, priority } => client.set_priority(id, priority).await?,
+            JobCmd::Watch { id } => {
+                let target = id.to_string();
+                println!("watching {target} (Ctrl-C to stop)");
+                client
+                    .watch_events(|v| {
+                        if let Some(j) = v.get("job_id").and_then(|x| x.as_str()) {
+                            if j != target {
+                                return;
+                            }
+                        }
+                        println!("{v}");
+                    })
+                    .await?;
+            }
         },
         Cmd::Hashlist { cmd } => match cmd {
             HashlistCmd::Ls => {
@@ -217,6 +258,15 @@ async fn main() -> Result<()> {
                     println!("created {}", hl.id);
                 }
             }
+            HashlistCmd::Import { id, file } => {
+                let text = std::fs::read_to_string(&file)?;
+                let hl = client.import_hashes(id, text).await?;
+                if cli.json {
+                    print_json(&hl)?;
+                } else {
+                    println!("{} now has {} hashes", hl.id, hl.total);
+                }
+            }
             HashlistCmd::Cracked { id } => {
                 let cracked = client.list_cracked(id).await?;
                 if cli.json {
@@ -226,6 +276,33 @@ async fn main() -> Result<()> {
                         println!("{}  ->  {}", c.hash, c.plain);
                     }
                 }
+            }
+        },
+        Cmd::File { cmd } => match cmd {
+            FileCmd::Add { path, kind } => {
+                let f = client.upload_file(&path, &kind).await?;
+                if cli.json {
+                    print_json(&f)?;
+                } else {
+                    println!("uploaded {} ({})", f.id, f.name);
+                }
+            }
+            FileCmd::Ls => {
+                let files = client.list_files().await?;
+                if cli.json {
+                    print_json(&files)?;
+                } else {
+                    for f in &files {
+                        println!(
+                            "{}  {:<24}  {}  {} bytes",
+                            f.id, f.name, f.kind, f.size_bytes
+                        );
+                    }
+                }
+            }
+            FileCmd::Rm { id } => {
+                client.delete_file(id).await?;
+                println!("deleted {id}");
             }
         },
     }

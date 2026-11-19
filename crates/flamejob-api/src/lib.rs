@@ -160,6 +160,38 @@ pub struct DeviceSample {
     pub hashrate: i64,
 }
 
+/// Server-sent event payloads streamed from `GET /events`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(tag = "type")]
+pub enum Event {
+    JobUpdated {
+        job_id: Uuid,
+        #[schema(value_type = String)]
+        state: JobState,
+    },
+    TaskUpdated {
+        job_id: Uuid,
+        task_id: Uuid,
+        progress: f64,
+        speed: i64,
+        eta: Option<DateTime<Utc>>,
+    },
+    HashCracked {
+        hashlist_id: Uuid,
+        hash: String,
+    },
+}
+
+impl Event {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Event::JobUpdated { .. } => "JobUpdated",
+            Event::TaskUpdated { .. } => "TaskUpdated",
+            Event::HashCracked { .. } => "HashCracked",
+        }
+    }
+}
+
 #[derive(OpenApi)]
 #[openapi(
     info(
@@ -181,6 +213,7 @@ pub struct DeviceSample {
         FileView,
         UserCreate,
         Problem,
+        Event,
         DeviceView,
         DeviceSample,
         agent::AgentClaimCreate,
