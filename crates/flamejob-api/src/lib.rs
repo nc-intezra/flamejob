@@ -56,6 +56,10 @@ pub struct JobView {
     pub priority: i32,
     pub created_at: DateTime<Utc>,
     pub est_completion: Option<DateTime<Utc>>,
+    pub progress: f64,
+    pub speed: i64,
+    pub cracked: i32,
+    pub total: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -66,6 +70,8 @@ pub struct TaskView {
     pub state: TaskState,
     pub progress: f64,
     pub speed: i64,
+    pub keyspace_offset: i64,
+    pub keyspace_len: i64,
     pub eta: Option<DateTime<Utc>>,
 }
 

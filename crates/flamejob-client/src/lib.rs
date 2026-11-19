@@ -132,4 +132,13 @@ impl Client {
             .json()
             .await?)
     }
+    pub async fn list_job_tasks(&self, job_id: Uuid) -> Result<Vec<TaskView>> {
+        Ok(self
+            .request(Method::GET, &format!("/jobs/{job_id}/tasks"))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
 }
