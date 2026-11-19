@@ -132,4 +132,81 @@ impl Client {
             .json()
             .await?)
     }
+    pub async fn import_hashes(&self, hashlist_id: Uuid, text: String) -> Result<HashlistView> {
+        Ok(self
+            .request(Method::POST, &format!("/hashlists/{hashlist_id}/hashes"))
+            .body(text)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+
+    pub async fn upload_file(&self, path: &std::path::Path, kind: &str) -> Result<FileView> {
+        let bytes = std::fs::read(path).context("reading file")?;
+        let fname = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("file")
+            .to_string();
+        let form = reqwest::multipart::Form::new()
+            .text("kind", kind.to_string())
+            .part(
+                "file",
+                reqwest::multipart::Part::bytes(bytes).file_name(fname),
+            );
+        Ok(self
+            .request(Method::POST, "/files")
+            .multipart(form)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+
+    pub async fn list_files(&self) -> Result<Vec<FileView>> {
+        Ok(self
+            .request(Method::GET, "/files")
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+
+    pub async fn delete_file(&self, id: Uuid) -> Result<()> {
+        self.request(Method::DELETE, &format!("/files/{id}"))
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    /// Stream server-sent events, invoking `on_event` with each parsed JSON payload.
+    pub async fn watch_events<F: FnMut(serde_json::Value)>(&self, mut on_event: F) -> Result<()> {
+        use tokio_stream::StreamExt;
+        let resp = self
+            .request(Method::GET, "/events")
+            .send()
+            .await?
+            .error_for_status()?;
+        let mut stream = resp.bytes_stream();
+        let mut buf = String::new();
+        while let Some(chunk) = stream.next().await {
+            buf.push_str(&String::from_utf8_lossy(&chunk?));
+            while let Some(pos) = buf.find("\n\n") {
+                let frame: String = buf.drain(..pos + 2).collect();
+                for line in frame.lines() {
+                    if let Some(data) = line.strip_prefix("data: ") {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
+                            on_event(v);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }

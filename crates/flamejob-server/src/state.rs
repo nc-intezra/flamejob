@@ -6,6 +6,8 @@ use metrics_exporter_prometheus::PrometheusHandle;
 
 use crate::config::Config;
 use crate::crypto::Cipher;
+use flamejob_api::Event;
+use tokio::sync::broadcast;
 
 #[derive(Clone)]
 pub struct AppState(Arc<Inner>);
@@ -17,6 +19,7 @@ pub struct Inner {
     pub decode_key: DecodingKey,
     pub metrics: PrometheusHandle,
     pub cipher: Cipher,
+    pub events: broadcast::Sender<Event>,
 }
 
 impl AppState {
@@ -25,6 +28,7 @@ impl AppState {
         let decode_key = DecodingKey::from_secret(cfg.auth.jwt_secret.as_bytes());
         let metrics = crate::metrics::recorder()?;
         let cipher = Cipher::from_bytes(crate::crypto::key_from_config(&cfg));
+        let (events, _) = broadcast::channel(256);
         Ok(Self(Arc::new(Inner {
             cfg,
             db,
@@ -32,7 +36,14 @@ impl AppState {
             decode_key,
             metrics,
             cipher,
+            events,
         })))
+    }
+}
+
+impl AppState {
+    pub fn publish(&self, ev: Event) {
+        let _ = self.events.send(ev);
     }
 }
 

@@ -10,8 +10,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::anyhow;
-use flamejob_api::JobConfig;
-use flamejob_core::{RunHandle, Runner, RunnerTask, StatusUpdate, TaskState};
+use flamejob_api::{Event, JobConfig};
+use flamejob_core::{JobState, RunHandle, Runner, RunnerTask, StatusUpdate, TaskState};
 use flamejob_runner::LocalRunner;
 use tokio::sync::{mpsc, Mutex};
 use uuid::Uuid;
@@ -204,6 +204,10 @@ impl Scheduler {
             .bind(job_id)
             .execute(&self.state.db)
             .await?;
+        self.state.publish(Event::JobUpdated {
+            job_id,
+            state: JobState::Running,
+        });
         tracing::info!(%job_id, chunks = chunks.len(), "job running (chunked)");
         self.start_next_chunk(job_id).await;
         Ok(())
@@ -374,6 +378,13 @@ impl Scheduler {
                     .execute(&self.state.db)
                     .await;
             }
+            self.state.publish(Event::TaskUpdated {
+                job_id,
+                task_id,
+                progress: u.progress,
+                speed: u.speed,
+                eta: u.eta,
+            });
             last = u.state;
         }
         self.finalize_chunk(job_id, task_id, last).await;
@@ -406,9 +417,21 @@ impl Scheduler {
 
         if last == TaskState::Done {
             let _ = self.set_task(task_id, "done").await;
-            // Release the slot; the tick loop starts the next pending chunk
-            // (or finalizes the job when none remain).
-            self.running.lock().await.remove(&job_id);
+            let pending: i64 =
+                sqlx::query_scalar("SELECT count(*) FROM tasks WHERE job_id = $1 AND state = 'pending'")
+                    .bind(job_id)
+                    .fetch_one(&self.state.db)
+                    .await
+                    .unwrap_or(0);
+            if pending == 0 {
+                // Last chunk done: finalize the whole job.
+                let (total, cracked) = self.counts(job_id).await;
+                let st = if total > 0 && cracked >= total { "completed" } else { "exhausted" };
+                self.set_job_terminal(job_id, st, None).await;
+            } else {
+                // Release the slot; the tick loop starts the next pending chunk.
+                self.running.lock().await.remove(&job_id);
+            }
         } else {
             let attempts = {
                 let mut m = self.retries.lock().await;
@@ -449,6 +472,11 @@ impl Scheduler {
         .bind(error)
         .execute(&self.state.db)
         .await;
+        if let Ok(js) =
+            serde_json::from_value::<JobState>(serde_json::Value::String(state.to_string()))
+        {
+            self.state.publish(Event::JobUpdated { job_id, state: js });
+        }
         self.cleanup(job_id).await;
         tracing::info!(%job_id, state, "job finalized");
     }
@@ -511,6 +539,10 @@ impl Scheduler {
             .bind(hash)
             .execute(&self.state.db)
             .await;
+            self.state.publish(Event::HashCracked {
+                hashlist_id,
+                hash: hash.to_string(),
+            });
         }
         let _ = sqlx::query(
             "UPDATE hashlists SET cracked = \
