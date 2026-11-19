@@ -3,6 +3,7 @@ name = "flamejob-tui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "flamejob terminal dashboard"
 
 [[bin]]
 name = "flamejob-tui"
@@ -11,6 +12,15 @@ path = "src/main.rs"
 [[bin]]
 name = "tui-shot"
 path = "src/bin/shot.rs"
+
+[package.metadata.deb]
+maintainer = "nc-intezra <nc-intezra@users.noreply.github.com>"
+section = "net"
+priority = "optional"
+# Ship only the dashboard binary, not the screenshot dev tool (tui-shot).
+assets = [
+    ["target/release/flamejob-tui", "usr/bin/", "755"],
+]
 
 [dependencies]
 flamejob-api = { path = "../flamejob-api" }
