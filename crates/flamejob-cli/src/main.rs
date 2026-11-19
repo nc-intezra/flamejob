@@ -91,6 +91,10 @@ enum HashlistCmd {
         #[arg(short = 'm', long)]
         hash_type: i32,
     },
+    /// Show decrypted cracked results (needs ViewPlaintext)
+    Cracked {
+        id: Uuid,
+    },
 }
 
 fn token_path() -> PathBuf {
@@ -211,6 +215,16 @@ async fn main() -> Result<()> {
                     print_json(&hl)?;
                 } else {
                     println!("created {}", hl.id);
+                }
+            }
+            HashlistCmd::Cracked { id } => {
+                let cracked = client.list_cracked(id).await?;
+                if cli.json {
+                    print_json(&cracked)?;
+                } else {
+                    for c in &cracked {
+                        println!("{}  ->  {}", c.hash, c.plain);
+                    }
                 }
             }
         },

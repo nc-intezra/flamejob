@@ -1,6 +1,8 @@
 //! flamejobd — the flamejob control-plane server.
 mod auth;
+mod bootstrap;
 mod config;
+mod crypto;
 mod error;
 mod metrics;
 mod routes;
@@ -32,6 +34,7 @@ async fn main() -> Result<()> {
     flamejob_db::migrate(&pool).await?;
 
     let state = state::AppState::new(cfg.clone(), pool)?;
+    bootstrap::ensure_superadmin(&state).await?;
     scheduler::spawn(state.clone());
 
     let app = routes::router(state);

@@ -25,6 +25,7 @@ pub fn router(state: AppState) -> Router {
         .route("/jobs/:id/resume", post(resume_job))
         .route("/jobs/:id/cancel", post(cancel_job))
         .route("/hashlists", get(list_hashlists).post(create_hashlist))
+        .route("/hashlists/:id/cracked", get(list_cracked))
         .route("/admin/users", post(create_user))
         .with_state(state)
 }
@@ -186,7 +187,7 @@ async fn resume_job(
     a: AuthUser,
     p: Path<Uuid>,
 ) -> Result<StatusCode, AppError> {
-    set_job_state(s, a, p, JobState::Running).await
+    set_job_state(s, a, p, JobState::Queued).await
 }
 async fn cancel_job(
     s: State<AppState>,
@@ -296,6 +297,31 @@ async fn create_user(
             .await?;
     }
     Ok(StatusCode::CREATED)
+}
+
+async fn list_cracked(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<CrackedHash>>, AppError> {
+    auth.require(Capability::ViewPlaintext)?;
+    let rows: Vec<(String, Option<String>, Option<Vec<u8>>)> = sqlx::query_as(
+        "SELECT hash, salt, plain FROM hashes WHERE hashlist_id = $1 AND plain IS NOT NULL",
+    )
+    .bind(id)
+    .fetch_all(&state.db)
+    .await?;
+    let out = rows
+        .into_iter()
+        .map(|(hash, salt, plain)| {
+            let plain = plain
+                .and_then(|b| state.cipher.decrypt(&b))
+                .and_then(|v| String::from_utf8(v).ok())
+                .unwrap_or_default();
+            CrackedHash { hash, salt, plain }
+        })
+        .collect();
+    Ok(Json(out))
 }
 
 // ---- helpers ----

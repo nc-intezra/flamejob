@@ -1,15 +1,20 @@
 //! flamejob-runner: drives the hashcat binary as a subprocess and parses its
-//! `--status-json` output into StatusUpdate samples.
-use std::path::PathBuf;
+//! `--status-json` output into StatusUpdate samples. The LocalRunner keeps a
+//! registry of live child processes so a task can be cancelled.
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use flamejob_core::{Result, RunHandle, Runner, RunnerTask, StatusSink, StatusUpdate, TaskState};
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
+use tokio::process::{Child, Command};
+use tokio::sync::Mutex;
+use uuid::Uuid;
 
-/// Filesystem locations the runner needs; derived from the server data_dir.
+/// Filesystem locations for a single task run.
 #[derive(Debug, Clone)]
 pub struct RunnerPaths {
     pub potfile: PathBuf,
@@ -18,17 +23,35 @@ pub struct RunnerPaths {
 }
 
 pub struct LocalRunner {
-    pub hashcat_bin: String,
-    pub workload: u8,
-    pub paths: RunnerPaths,
+    hashcat_bin: String,
+    workload: u8,
+    data_dir: PathBuf,
+    children: Arc<Mutex<HashMap<Uuid, Child>>>,
 }
 
 impl LocalRunner {
-    pub fn new(hashcat_bin: impl Into<String>, workload: u8, paths: RunnerPaths) -> Self {
+    pub fn new(hashcat_bin: impl Into<String>, workload: u8, data_dir: impl Into<PathBuf>) -> Self {
         Self {
             hashcat_bin: hashcat_bin.into(),
             workload,
-            paths,
+            data_dir: data_dir.into(),
+            children: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Where a task's cracked results are written (read back by the scheduler).
+    pub fn outfile_path(data_dir: &Path, task_id: Uuid) -> PathBuf {
+        data_dir.join("jobs").join(format!("{task_id}.cracked"))
+    }
+
+    fn paths_for(&self, task_id: Uuid) -> RunnerPaths {
+        RunnerPaths {
+            potfile: self.data_dir.join("flamejob.pot"),
+            outfile: Self::outfile_path(&self.data_dir, task_id),
+            restore: self
+                .data_dir
+                .join("restore")
+                .join(format!("{task_id}.restore")),
         }
     }
 }
@@ -81,16 +104,15 @@ struct HcDevice {
     speed: i64,
 }
 
+/// hashcat status codes: 5 = Exhausted, 6 = Cracked -> Done; others -> Running.
 fn status_to_task_state(code: i32) -> TaskState {
-    // hashcat status codes: 3=Running, 5=Exhausted, 6=Cracked, others treated as running
     match code {
-        5 => TaskState::Done,
-        6 => TaskState::Done,
+        5 | 6 => TaskState::Done,
         _ => TaskState::Running,
     }
 }
 
-fn parse_status(line: &str, task_id: uuid::Uuid) -> Option<StatusUpdate> {
+fn parse_status(line: &str, task_id: Uuid) -> Option<StatusUpdate> {
     let s: HcStatus = serde_json::from_str(line).ok()?;
     let progress = s
         .progress
@@ -137,12 +159,22 @@ impl Runner for LocalRunner {
     }
 
     async fn start(&self, task: &RunnerTask, tx: StatusSink) -> Result<RunHandle> {
+        let paths = self.paths_for(task.task_id);
+        // ensure output directories exist
+        for dir in [paths.outfile.parent(), paths.restore.parent()]
+            .into_iter()
+            .flatten()
+        {
+            let _ = tokio::fs::create_dir_all(dir).await;
+        }
         let session = task.task_id.to_string();
         let mut args = vec![format!("-w{}", self.workload)];
-        args.extend(build_args(task, &self.paths, &session));
+        args.extend(build_args(task, &paths, &session));
+
         let mut child = Command::new(&self.hashcat_bin)
             .args(&args)
             .stdout(Stdio::piped())
+            .stderr(Stdio::null())
             .spawn()
             .map_err(|e| flamejob_core::Error::Runner(e.to_string()))?;
         let stdout = child
@@ -150,6 +182,9 @@ impl Runner for LocalRunner {
             .take()
             .ok_or_else(|| flamejob_core::Error::Runner("no stdout".into()))?;
         let task_id = task.task_id;
+        self.children.lock().await.insert(task_id, child);
+
+        let children = self.children.clone();
         tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
@@ -157,21 +192,28 @@ impl Runner for LocalRunner {
                     let _ = tx.send(update).await;
                 }
             }
-            let _ = child.wait().await;
+            // stdout closed => process finished; reap it.
+            if let Some(mut child) = children.lock().await.remove(&task_id) {
+                let _ = child.wait().await;
+            }
         });
         Ok(RunHandle { task_id })
     }
 
-    async fn pause(&self, _handle: &RunHandle) -> Result<()> {
-        // Phase 1: checkpoint via --restore is handled by cancel+relaunch.
-        Ok(())
+    async fn pause(&self, handle: &RunHandle) -> Result<()> {
+        // Phase 1: pause == stop the process (a checkpoint restore file is left
+        // behind). Resume re-queues the job.
+        self.cancel(handle).await
     }
 
     async fn resume(&self, _handle: &RunHandle) -> Result<()> {
         Ok(())
     }
 
-    async fn cancel(&self, _handle: &RunHandle) -> Result<()> {
+    async fn cancel(&self, handle: &RunHandle) -> Result<()> {
+        if let Some(mut child) = self.children.lock().await.remove(&handle.task_id) {
+            let _ = child.kill().await;
+        }
         Ok(())
     }
 }
@@ -202,5 +244,15 @@ mod tests {
         assert!(args.contains(&"--status-json".to_string()));
         assert!(args.contains(&"-m".to_string()));
         assert!(args.iter().any(|a| a == "/tmp/best64.rule"));
+    }
+
+    #[test]
+    fn parses_running_status() {
+        let line = r#"{"status":3,"progress":[50,100],"recovered_hashes":[2,10],"devices":[{"device_id":1,"speed":1000}],"estimated_stop":1700000000}"#;
+        let u = parse_status(line, uuid::Uuid::nil()).unwrap();
+        assert!((u.progress - 0.5).abs() < 1e-9);
+        assert_eq!(u.speed, 1000);
+        assert_eq!(u.recovered, 2);
+        assert_eq!(u.state, TaskState::Running);
     }
 }

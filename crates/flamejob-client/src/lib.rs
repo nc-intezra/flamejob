@@ -123,4 +123,13 @@ impl Client {
             .json()
             .await?)
     }
+    pub async fn list_cracked(&self, hashlist_id: Uuid) -> Result<Vec<CrackedHash>> {
+        Ok(self
+            .request(Method::GET, &format!("/hashlists/{hashlist_id}/cracked"))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
 }
