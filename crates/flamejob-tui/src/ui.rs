@@ -242,9 +242,9 @@ fn job_detail(f: &mut Frame, area: Rect, d: &Dashboard) {
 
 fn devices(f: &mut Frame, area: Rect, d: &Dashboard) {
     let title = if d.telemetry_live {
-        "Devices"
+        "Devices · live"
     } else {
-        "Devices · sample (live in Phase 2)"
+        "Devices · sample"
     };
     let block = panel(title);
     let inner = block.inner(area);
@@ -252,14 +252,14 @@ fn devices(f: &mut Frame, area: Rect, d: &Dashboard) {
 
     if d.devices.is_empty() {
         let note = Paragraph::new(Line::from(Span::styled(
-            "awaiting agent telemetry — collected in Phase 2",
+            "no devices sampled yet — telemetry collector starting",
             Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
         )));
         f.render_widget(note, inner);
         return;
     }
 
-    let header = Row::new(["DEVICE", "TEMP", "UTIL", "P-STATE", "HASHRATE"])
+    let header = Row::new(["DEVICE", "TEMP", "UTIL", "P-STATE", "CLOCK", "HASHRATE"])
         .style(Style::default().fg(DIM).add_modifier(Modifier::BOLD));
     let rows = d.devices.iter().map(|dev: &Device| {
         Row::new(vec![
@@ -267,6 +267,12 @@ fn devices(f: &mut Frame, area: Rect, d: &Dashboard) {
             Cell::from(format!("{}°C", dev.temp)).style(Style::default().fg(temp_color(dev.temp))),
             Cell::from(progress_bar(dev.util as f64 / 100.0, 8, "running")),
             Cell::from(dev.pstate.clone()).style(Style::default().fg(ACCENT)),
+            Cell::from(if dev.clock_mhz > 0 {
+                format!("{} MHz", dev.clock_mhz)
+            } else {
+                "—".into()
+            })
+            .style(Style::default().fg(INK)),
             Cell::from(fmt_speed(dev.hashrate)).style(Style::default().fg(INK)),
         ])
     });
@@ -275,6 +281,7 @@ fn devices(f: &mut Frame, area: Rect, d: &Dashboard) {
         Constraint::Length(6),
         Constraint::Length(13),
         Constraint::Length(7),
+        Constraint::Length(9),
         Constraint::Length(11),
     ];
     f.render_widget(

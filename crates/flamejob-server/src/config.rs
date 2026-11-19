@@ -8,6 +8,7 @@ pub struct Config {
     pub hashcat: HashcatCfg,
     pub crypto: CryptoCfg,
     pub scheduler: SchedulerCfg,
+    pub telemetry: TelemetryCfg,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +51,16 @@ pub struct SchedulerCfg {
     pub max_chunks: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelemetryCfg {
+    /// Whether the local GPU/host telemetry collector runs.
+    pub enabled: bool,
+    /// Seconds between metric samples.
+    pub sample_interval_secs: u64,
+    /// Max rows returned by the per-device history endpoint.
+    pub history_limit: i64,
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -76,6 +87,11 @@ impl Default for Config {
             scheduler: SchedulerCfg {
                 chunk_size: 50_000_000,
                 max_chunks: 500,
+            },
+            telemetry: TelemetryCfg {
+                enabled: true,
+                sample_interval_secs: 5,
+                history_limit: 500,
             },
         }
     }

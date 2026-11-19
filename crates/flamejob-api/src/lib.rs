@@ -135,6 +135,26 @@ pub struct DeviceView {
     pub pstate: String,
     pub power_w: i32,
     pub fan: i32,
+    /// Core/graphics clock in MHz.
+    pub clock_mhz: i32,
+    /// Memory clock in MHz.
+    pub mem_clock_mhz: i32,
+    pub hashrate: i64,
+}
+
+/// One historical telemetry sample for a device, from `metric_samples`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DeviceSample {
+    pub ts: DateTime<Utc>,
+    pub temp: i32,
+    pub util: i32,
+    pub mem_used: i64,
+    pub mem_total: i64,
+    pub pstate: String,
+    pub power_w: i32,
+    pub fan: i32,
+    pub clock_mhz: i32,
+    pub mem_clock_mhz: i32,
     pub hashrate: i64,
 }
 
@@ -158,7 +178,9 @@ pub struct DeviceView {
         CrackedHash,
         FileView,
         UserCreate,
-        Problem
+        Problem,
+        DeviceView,
+        DeviceSample
     ))
 )]
 pub struct ApiDoc;

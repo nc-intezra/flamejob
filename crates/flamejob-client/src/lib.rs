@@ -12,6 +12,20 @@ pub struct Client {
     token: Option<String>,
 }
 
+/// Percent-encode one URL path segment (unreserved chars pass through).
+fn encode_segment(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for &b in s.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 impl Client {
     pub fn new(base: impl Into<String>) -> Self {
         Self {
@@ -149,5 +163,27 @@ impl Client {
             .error_for_status()?
             .json()
             .await?)
+    }
+    pub async fn device_history(&self, name: &str) -> Result<Vec<DeviceSample>> {
+        let path = format!("/devices/{}/history", encode_segment(name));
+        Ok(self
+            .request(Method::GET, &path)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode_segment;
+
+    #[test]
+    fn encodes_spaces_and_parens() {
+        assert_eq!(encode_segment("GPU0 RTX 4090"), "GPU0%20RTX%204090");
+        assert_eq!(encode_segment("CPU (host)"), "CPU%20%28host%29");
+        assert_eq!(encode_segment("plain-name_1.0~"), "plain-name_1.0~");
     }
 }

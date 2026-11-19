@@ -56,6 +56,7 @@ pub async fn fetch_dashboard(client: &Client, server: &str, selected: usize) -> 
             mem_used: d.mem_used as i32,
             mem_total: d.mem_total as i32,
             pstate: d.pstate.clone(),
+            clock_mhz: d.clock_mhz,
             hashrate: d.hashrate,
         })
         .collect();
