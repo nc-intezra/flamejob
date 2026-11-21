@@ -4,7 +4,11 @@ All notable changes to flamejob are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.6] - 2026-11-21
+
+Runs many jobs across the agent fleet at once, adds browser job submission, live
+agent status, and a cracked-password view, and raises the hash-import limit to
+8 GiB.
 
 ### Added
 - **Many jobs × many agents.** The scheduler now admits up to
@@ -224,6 +228,7 @@ fleet, all over one OpenAPI-described API.
   self-contained over the wire, while wordlist attacks assume the file is
   present on the agent.
 
+[1.0.6]: https://github.com/nc-intezra/flamejob/releases/tag/v1.0.6
 [1.0.5]: https://github.com/nc-intezra/flamejob/releases/tag/v1.0.5
 [1.0.4]: https://github.com/nc-intezra/flamejob/releases/tag/v1.0.4
 [1.0.3]: https://github.com/nc-intezra/flamejob/releases/tag/v1.0.3
