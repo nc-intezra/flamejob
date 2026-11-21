@@ -96,5 +96,3 @@ the local hashcat runner, so chunking and ETA logic are unchanged.
 cargo check --workspace
 cargo test --workspace
 ```
-
-License: MIT
