@@ -4,6 +4,23 @@ All notable changes to flamejob are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-11-20
+
+Documentation and packaging release. No changes to the server, agent, CLI or TUI
+runtime behavior.
+
+### Added
+- Role-based guides under `docs/guides/`: Administrator, Operator, and Viewer,
+  including an end-to-end "Distributed quick start" (control plane → agent → TUI).
+
+### Changed
+- Release `.deb` packages are now built on Ubuntu 22.04 (glibc 2.35), so they
+  install and run on Ubuntu 22.04 as well as newer releases (glibc is
+  forward-compatible); `cargo-deb` stamps `libc6 (>= 2.35)`.
+- `deploy/install.sh` now checks for PostgreSQL 16 after the database choice: it
+  verifies an external DSN's server version or a local PG 16 install, and stops
+  with guidance if 16 is not detected (override: `FLAMEJOB_SKIP_PG_CHECK=1`).
+
 ## [1.0.0] - 2026-11-19
 
 First stable release: a single-control-plane hashcat job queue with server-side
@@ -58,4 +75,5 @@ fleet, all over one OpenAPI-described API.
   self-contained over the wire, while wordlist attacks assume the file is
   present on the agent.
 
+[1.0.1]: https://github.com/nc-intezra/flamejob/releases/tag/v1.0.1
 [1.0.0]: https://github.com/nc-intezra/flamejob/releases/tag/v1.0.0
