@@ -4,7 +4,7 @@
 
 This guide is for **operators** — the people who load hashes, submit cracking jobs, and watch them run. As an operator you can do everything involved in getting work through flamejob: create hashlists and import hashes, upload wordlists / rules / masks, submit and control jobs, read recovered plaintext, and watch job and device stats. You cannot manage user accounts or the worker fleet — those are admin tasks (see the **Administrator Guide**), and strictly read-only users have their own **Viewer Guide**.
 
-You'll work through the `fj` command-line client and the `flamejob-tui` dashboard, both talking to a `flamejobd` control plane an admin has already deployed. This guide documents flamejob **1.0.0**.
+You'll work through the `fj` command-line client and the `flamejob-tui` dashboard, both talking to a `flamejobd` control plane an admin has already deployed. This guide documents flamejob **1.0.2**.
 
 ## 2. Concepts primer
 
@@ -91,7 +91,7 @@ fj job submit --hashlist <hashlist-id> --name corp-run-1 \
 - `--wordlist` takes a file id (from `fj file add`); omit it for attacks that don't need one.
 - `--priority` orders the queue — lower runs first; default `100`.
 
-The command prints the new job id and the job enters the queue. (The CLI's submit is built for wordlist attacks; rules, masks and extra hashcat arguments exist in the API's job config but aren't exposed as `fj` flags in 1.0.0.)
+The command prints the new job id and the job enters the queue. (The CLI's submit is built for wordlist attacks; rules, masks and extra hashcat arguments exist in the API's job config but aren't exposed as `fj` flags in 1.0.2.)
 
 **Control a running job:**
 
