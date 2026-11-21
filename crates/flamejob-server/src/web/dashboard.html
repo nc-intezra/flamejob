@@ -25,11 +25,14 @@
   /* OLED: 100% black background with orange-fade text */
   html[data-theme="oled"]{
     --bg:#000000; --panel:#070707; --panel2:#0c0c0c; --ink:#ffa652; --dim:#9a5a2a;
-    --accent:#ff7a18; --good:#ffb703; --warn:#ff9e3d; --bad:#ff5252; --busy:#ff8c00;
+    --accent:#ff7a18; --good:#ffb703; --warn:#ffb300; --bad:#ff1f1f; --busy:#ff8c00;
     --sel:#190d03; --track:#241206; --border:#1c1105;
     /* OLED flame: brightly coloured orange-red */
     --flame1:#ff2a00; --flame2:#ff9d00; --flame-opacity:1;
   }
+  /* OLED: make hot cards pop against the black background. */
+  html[data-theme="oled"] .num.bad{font-weight:700;text-shadow:0 0 9px rgba(255,31,31,.85)}
+  html[data-theme="oled"] .num.warn{font-weight:700;text-shadow:0 0 7px rgba(255,179,0,.55)}
   *{box-sizing:border-box}
   html,body{margin:0;height:100%}
   body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.4}
@@ -43,11 +46,12 @@
   header.bar{display:flex;align-items:center;justify-content:space-between;
     background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:8px 14px}
   .brandwrap{position:relative;display:inline-block;vertical-align:middle}
-  .brandwrap .flame{position:absolute;left:-10px;top:50%;transform:translateY(-50%);
-    height:30px;width:124px;opacity:var(--flame-opacity);z-index:0;pointer-events:none;
-    filter:drop-shadow(0 0 5px var(--flame1))}
+  /* Flame centred on the wordmark; the SVG gradient fades its tips to transparent
+     so it glows behind the letters instead of blending with their colour. */
+  .brandwrap .flame{position:absolute;left:50%;top:42%;transform:translate(-50%,-50%);
+    height:42px;width:118%;opacity:var(--flame-opacity);z-index:0;pointer-events:none}
   .brand{position:relative;z-index:1;font-family:var(--mono);font-weight:700;color:var(--accent);font-size:16px}
-  .sub{color:var(--dim);margin-left:8px}
+  .sub{color:var(--dim);margin-left:16px}
   .pill{margin-left:14px;font-size:12px}
   .pill.good{color:var(--good)} .pill.dim{color:var(--dim)}
   .right{display:flex;align-items:center;gap:14px}
@@ -202,7 +206,8 @@
           <defs>
             <linearGradient id="flameGrad" x1="0" y1="1" x2="0" y2="0">
               <stop offset="0" stop-color="var(--flame1)"/>
-              <stop offset="1" stop-color="var(--flame2)"/>
+              <stop offset="0.5" stop-color="var(--flame2)" stop-opacity="0.9"/>
+              <stop offset="1" stop-color="var(--flame2)" stop-opacity="0"/>
             </linearGradient>
           </defs>
           <g fill="url(#flameGrad)">
