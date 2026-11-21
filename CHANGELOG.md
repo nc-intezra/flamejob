@@ -4,7 +4,11 @@ All notable changes to flamejob are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.5] - 2026-11-21
+
+Adds a browser dashboard and a browseable OpenAPI reference, parallelises a
+single job's chunks across the agent fleet, and adds a "clear finished jobs"
+action with scrollable TUI tables.
 
 ### Added
 - **Multi-agent job parallelism.** The scheduler now fans a single job's chunks
@@ -188,6 +192,8 @@ fleet, all over one OpenAPI-described API.
   self-contained over the wire, while wordlist attacks assume the file is
   present on the agent.
 
+[1.0.5]: https://github.com/nc-intezra/flamejob/releases/tag/v1.0.5
+[1.0.4]: https://github.com/nc-intezra/flamejob/releases/tag/v1.0.4
 [1.0.3]: https://github.com/nc-intezra/flamejob/releases/tag/v1.0.3
 [1.0.2]: https://github.com/nc-intezra/flamejob/releases/tag/v1.0.2
 [1.0.1]: https://github.com/nc-intezra/flamejob/releases/tag/v1.0.1
