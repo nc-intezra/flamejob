@@ -23,6 +23,7 @@ assets = [
 ]
 
 [dependencies]
+flamejob-core = { path = "../flamejob-core" }
 flamejob-api = { path = "../flamejob-api" }
 flamejob-client = { path = "../flamejob-client" }
 ratatui = "0.29"

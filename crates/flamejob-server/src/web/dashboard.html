@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>flamejob · dashboard</title>
+<link rel="icon" href="data:," />
+<style>
+  :root{
+    --bg:#18191e; --panel:#21232a; --panel2:#1d1f26; --ink:#cdd2dc; --dim:#787e8c;
+    --accent:#61afef; --good:#98c379; --warn:#e5c07b; --bad:#e06c77;
+    --sel:#2d3240; --track:#373a44; --border:#2a2d36;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  html[data-theme="light"]{
+    --bg:#f4f6f9; --panel:#ffffff; --panel2:#eef1f5; --ink:#1f2530; --dim:#67707f;
+    --accent:#2f74c0; --good:#3f8f4f; --warn:#b07611; --bad:#c0392b;
+    --sel:#e6eef9; --track:#dde2ea; --border:#e0e4ea;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.4}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  button{font-family:var(--sans);cursor:pointer}
+  .mono{font-family:var(--mono)}
+
+  /* ---- shell ---- */
+  #app{display:none;flex-direction:column;height:100vh;padding:10px;gap:10px}
+  header.bar{display:flex;align-items:center;justify-content:space-between;
+    background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:8px 14px}
+  .brand{font-family:var(--mono);font-weight:700;color:var(--accent);font-size:16px}
+  .sub{color:var(--dim);margin-left:8px}
+  .pill{margin-left:14px;font-size:12px}
+  .pill.good{color:var(--good)} .pill.dim{color:var(--dim)}
+  .right{display:flex;align-items:center;gap:14px}
+  .clock{color:var(--ink);font-family:var(--mono);font-size:12px}
+  .user{color:var(--ink);font-family:var(--mono)}
+  .user .role{color:var(--dim);font-size:11px;margin-left:6px;text-transform:uppercase;letter-spacing:.04em}
+  .iconbtn{background:transparent;border:1px solid var(--border);color:var(--ink);
+    border-radius:8px;padding:5px 10px;font-size:12px}
+  .iconbtn:hover{border-color:var(--accent);color:var(--accent)}
+
+  main{display:grid;grid-template-columns:1.5fr 1fr;grid-template-rows:1fr auto;gap:10px;flex:1;min-height:0}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;display:flex;flex-direction:column;min-height:0;overflow:hidden}
+  .panel > .head{display:flex;align-items:center;justify-content:space-between;
+    padding:8px 12px;border-bottom:1px solid var(--border);font-weight:600}
+  .panel > .head .t{letter-spacing:.02em}
+  .panel > .body{padding:6px 4px;overflow:auto;min-height:0}
+  #jobsPanel{grid-row:1 / span 2}
+  .rightcol{display:flex;flex-direction:column;gap:10px;min-height:0}
+  #detailPanel{flex:1.1;min-height:0}
+  #devicesPanel{flex:1;min-height:0}
+  #agentsPanel,#adminPanel,#hashlistsPanel{min-height:0}
+
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{position:sticky;top:0;background:var(--panel);text-align:left;color:var(--dim);
+    font-weight:600;font-size:11px;letter-spacing:.06em;text-transform:uppercase;padding:6px 10px}
+  td{padding:6px 10px;border-top:1px solid var(--border);vertical-align:middle}
+  tbody tr{cursor:default}
+  tbody tr.rowsel{background:var(--sel)}
+  #jobsTable tbody tr{cursor:pointer}
+  #jobsTable tbody tr:hover{background:var(--sel)}
+
+  .state{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12px}
+  .dot{width:8px;height:8px;border-radius:50%;background:currentColor;display:inline-block}
+  .s-running,.s-completed,.s-done{color:var(--good)}
+  .s-queued,.s-assigned,.s-pending{color:var(--dim)}
+  .s-paused,.s-exhausted{color:var(--warn)}
+  .s-cancelled,.s-failed,.s-error{color:var(--bad)}
+
+  .bar-wrap{display:flex;align-items:center;gap:8px}
+  .bar-track{flex:1;height:8px;background:var(--track);border-radius:5px;overflow:hidden;min-width:60px}
+  .bar-fill{height:100%;background:var(--accent);border-radius:5px;transition:width .4s ease}
+  .bar-fill.running,.bar-fill.completed,.bar-fill.done{background:var(--good)}
+  .bar-fill.paused,.bar-fill.exhausted{background:var(--warn)}
+  .bar-fill.failed,.bar-fill.error,.bar-fill.cancelled{background:var(--bad)}
+  .pct{font-family:var(--mono);font-size:11px;color:var(--dim);min-width:34px;text-align:right}
+
+  .dim{color:var(--dim)} .good{color:var(--good)} .warn{color:var(--warn)} .accent{color:var(--accent)}
+  .num{font-family:var(--mono)}
+  .summary{display:flex;flex-wrap:wrap;gap:10px;padding:8px 12px;border-bottom:1px solid var(--border);font-family:var(--mono);font-size:12px}
+  .agg{padding:8px 12px;border-top:1px solid var(--border);font-family:var(--mono);font-size:12px;color:var(--dim)}
+  .empty{padding:16px 12px;color:var(--dim);font-style:italic}
+  .ctl{display:flex;gap:6px}
+  .ctl button{background:var(--panel2);border:1px solid var(--border);color:var(--ink);border-radius:6px;padding:3px 9px;font-size:12px}
+  .ctl button:hover{border-color:var(--accent);color:var(--accent)}
+  .ctl button.danger:hover{border-color:var(--bad);color:var(--bad)}
+
+  footer.bar{display:flex;gap:18px;align-items:center;background:var(--panel);border:1px solid var(--border);
+    border-radius:10px;padding:6px 14px;color:var(--dim);font-size:12px}
+  footer .k{color:var(--accent);font-family:var(--mono)}
+  .flash{color:var(--warn)}
+
+  /* admin forms */
+  .form{display:flex;flex-direction:column;gap:8px;padding:10px 12px}
+  .form .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .form input,.form select{background:var(--panel2);border:1px solid var(--border);color:var(--ink);
+    border-radius:6px;padding:6px 8px;font-size:13px;font-family:var(--mono)}
+  .form .roles{display:flex;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--dim)}
+  .form button.go{background:var(--accent);border:none;color:#0c1016;border-radius:6px;padding:6px 14px;font-weight:600}
+  .result{font-family:var(--mono);font-size:12px;color:var(--good);word-break:break-all}
+
+  /* ---- login ---- */
+  #login{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:var(--bg)}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:26px 28px;width:340px;max-width:92vw}
+  .card h1{font-family:var(--mono);color:var(--accent);margin:0 0 2px;font-size:22px}
+  .card p.tag{color:var(--dim);margin:0 0 18px;font-size:13px}
+  .card label{display:block;color:var(--dim);font-size:12px;margin:10px 0 4px}
+  .card input{width:100%;background:var(--panel2);border:1px solid var(--border);color:var(--ink);
+    border-radius:8px;padding:9px 10px;font-size:14px;font-family:var(--mono)}
+  .card button{width:100%;margin-top:18px;background:var(--accent);border:none;color:#0c1016;
+    font-weight:700;border-radius:8px;padding:10px;font-size:14px}
+  .card .err{color:var(--bad);font-size:12px;margin-top:10px;min-height:16px}
+  .card details{margin-top:14px}
+  .card details summary{color:var(--dim);font-size:12px;cursor:pointer}
+  .topright{position:fixed;top:14px;right:16px}
+</style>
+</head>
+<body>
+
+<!-- ===== login ===== -->
+<div id="login">
+  <button class="iconbtn topright" id="loginTheme">◐ theme</button>
+  <form class="card" id="loginForm" autocomplete="off">
+    <h1>flamejob</h1>
+    <p class="tag">distributed hashcat queue — sign in</p>
+    <label>Username</label>
+    <input id="u" name="u" autocomplete="username" autofocus />
+    <label>Password</label>
+    <input id="p" name="p" type="password" autocomplete="current-password" />
+    <button type="submit" id="loginBtn">Sign in</button>
+    <div class="err" id="loginErr"></div>
+    <details>
+      <summary>API endpoint</summary>
+      <label>Base URL the browser calls</label>
+      <input id="apiBaseInput" placeholder="https://host:8443" />
+    </details>
+  </form>
+</div>
+
+<!-- ===== app ===== -->
+<div id="app">
+  <header class="bar">
+    <div>
+      <span class="brand">flamejob</span>
+      <span class="sub">queue dashboard</span>
+      <span class="pill good" id="cRunning">0 running</span>
+      <span class="pill dim" id="cQueued">0 queued</span>
+    </div>
+    <div class="right">
+      <a id="docsLink" class="iconbtn" target="_blank" rel="noopener">API docs ↗</a>
+      <span class="clock" id="clock"></span>
+      <button class="iconbtn" id="themeBtn">◐ theme</button>
+      <span class="user"><span id="uName" class="mono"></span><span class="role" id="uRoles"></span></span>
+      <button class="iconbtn" id="logoutBtn">Log out</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel" id="jobsPanel">
+      <div class="head"><span class="t">Jobs</span><span class="ctl" id="jobsCtl"></span></div>
+      <div class="body">
+        <table id="jobsTable">
+          <thead><tr><th>Job</th><th>State</th><th>Progress</th><th>Speed</th><th>ETA</th><th>Cracked</th></tr></thead>
+          <tbody id="jobsBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <div class="rightcol">
+      <section class="panel" id="detailPanel">
+        <div class="head"><span class="t" id="detailTitle">Job</span><span class="ctl" id="detailCtl"></span></div>
+        <div class="summary" id="detailSummary"><span class="dim">select a job</span></div>
+        <div class="body">
+          <table id="chunksTable">
+            <thead><tr><th>Chunk</th><th>Keyspace</th><th>Progress</th><th>Speed</th><th>State</th></tr></thead>
+            <tbody id="chunksBody"></tbody>
+          </table>
+        </div>
+        <div class="agg" id="detailAgg"></div>
+      </section>
+
+      <section class="panel" id="devicesPanel">
+        <div class="head"><span class="t">Devices</span><span class="dim" id="devNote"></span></div>
+        <div class="body">
+          <table id="devTable">
+            <thead><tr><th>Device</th><th>Temp</th><th>Util</th><th>P-State</th><th>Clock</th><th>Hashrate</th></tr></thead>
+            <tbody id="devBody"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <section class="panel" id="agentsPanel" style="grid-column:1 / -1;display:none">
+      <div class="head"><span class="t">Agents</span><span class="dim" id="agNote"></span></div>
+      <div class="body">
+        <table id="agTable">
+          <thead><tr><th>Name</th><th>Status</th><th>Enrolled</th><th>Last seen</th></tr></thead>
+          <tbody id="agBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel" id="adminPanel" style="grid-column:1 / -1;display:none">
+      <div class="head"><span class="t">Administration</span></div>
+      <div class="body" id="adminBody"></div>
+    </section>
+  </main>
+
+  <footer class="bar">
+    <span><span class="k">auto</span> refresh 3s</span>
+    <span><span class="k">R</span> refresh now</span>
+    <span id="roleHint" class="dim"></span>
+    <span id="flash" class="flash"></span>
+    <span style="margin-left:auto" class="dim" id="lastUpd"></span>
+  </footer>
+</div>
+
+<script>
+"use strict";
+const CFG = Object.assign({apiBase:null, apiPort:8443, theme:"dark"}, "__FJCFG__");
+
+// ---- role -> capability map (mirrors flamejob-core::model) ----
+const ROLE_CAPS = {
+  superadmin:["manage_users","submit_jobs","ingest","view_plaintext","view_stats","view_jobs","manage_directory","manage_agents"],
+  admin:["manage_users","manage_agents"],
+  operator:["submit_jobs","ingest","view_plaintext","view_stats","view_jobs"],
+  viewer:["view_stats","view_jobs"],
+};
+const ALL_ROLES = ["superadmin","admin","operator","viewer"];
+
+const S = { token:null, roles:[], caps:new Set(), user:"", selected:null, timer:null };
+
+// ---- theme ----
+function applyTheme(t){ document.documentElement.setAttribute("data-theme", t==="light"?"light":"dark"); localStorage.setItem("fj_theme", t); }
+function toggleTheme(){ applyTheme(document.documentElement.getAttribute("data-theme")==="dark"?"light":"dark"); }
+applyTheme(localStorage.getItem("fj_theme") || CFG.theme || "dark");
+document.getElementById("themeBtn").onclick = toggleTheme;
+document.getElementById("loginTheme").onclick = toggleTheme;
+
+// ---- api ----
+function apiBase(){
+  return localStorage.getItem("fj_api_base") || CFG.apiBase ||
+    (location.protocol + "//" + location.hostname + ":" + CFG.apiPort);
+}
+async function api(path, opts){
+  opts = opts || {};
+  const h = opts.headers || {};
+  if(S.token) h["Authorization"] = "Bearer " + S.token;
+  const res = await fetch(apiBase() + path, Object.assign({}, opts, {headers:h}));
+  if(res.status === 401){ logout(); throw new Error("unauthorized"); }
+  if(!res.ok){ throw new Error(path + " → " + res.status); }
+  const ct = res.headers.get("content-type") || "";
+  return ct.includes("json") ? res.json() : res.text();
+}
+const can = c => S.caps.has(c);
+
+// ---- formatting (mirrors the TUI helpers) ----
+function fmtSpeed(h){ h=+h||0; const f=h; if(h<=0)return "—";
+  if(f>=1e9)return (f/1e9).toFixed(1)+" GH/s"; if(f>=1e6)return (f/1e6).toFixed(1)+" MH/s";
+  if(f>=1e3)return (f/1e3).toFixed(1)+" kH/s"; return h+" H/s"; }
+function shortNum(n){ n=+n||0; const f=n;
+  if(f>=1e12)return (f/1e12).toFixed(1)+"T"; if(f>=1e9)return (f/1e9).toFixed(1)+"G";
+  if(f>=1e6)return Math.round(f/1e6)+"M"; if(f>=1e3)return Math.round(f/1e3)+"k"; return ""+n; }
+function fmtEta(eta){ if(!eta)return "—"; const secs=Math.floor((new Date(eta)-new Date())/1000);
+  if(secs<=0)return "soon"; if(secs>=3600)return Math.floor(secs/3600)+"h"+String(Math.floor(secs%3600/60)).padStart(2,"0")+"m";
+  return Math.floor(secs/60)+"m"+String(secs%60).padStart(2,"0")+"s"; }
+function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function stateEl(s){ return `<span class="state s-${esc(s)}"><span class="dot"></span>${esc(s)}</span>`; }
+function bar(p, state){ p=Math.max(0,Math.min(1,+p||0)); const pct=Math.round(p*100);
+  return `<div class="bar-wrap"><div class="bar-track"><div class="bar-fill ${esc(state||"")}" style="width:${pct}%"></div></div><span class="pct">${pct}%</span></div>`; }
+
+function flash(msg, bad){ const f=document.getElementById("flash"); f.textContent=msg||""; f.style.color=bad?"var(--bad)":"var(--warn)"; if(msg) setTimeout(()=>{if(f.textContent===msg)f.textContent="";},4000); }
+
+// ---- login / logout ----
+document.getElementById("apiBaseInput").value = localStorage.getItem("fj_api_base") || "";
+document.getElementById("loginForm").addEventListener("submit", async e=>{
+  e.preventDefault();
+  const base = document.getElementById("apiBaseInput").value.trim();
+  if(base) localStorage.setItem("fj_api_base", base.replace(/\/+$/,"")); else localStorage.removeItem("fj_api_base");
+  const u=document.getElementById("u").value, p=document.getElementById("p").value;
+  const btn=document.getElementById("loginBtn"); btn.disabled=true; btn.textContent="Signing in…";
+  try{
+    const r = await api("/auth/login", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({username:u,password:p})});
+    S.token=r.token; localStorage.setItem("fj_token", r.token);
+    await start();
+  }catch(err){ document.getElementById("loginErr").textContent = "Sign in failed — check credentials and API endpoint."; }
+  finally{ btn.disabled=false; btn.textContent="Sign in"; }
+});
+function logout(){
+  S.token=null; localStorage.removeItem("fj_token"); if(S.timer) clearInterval(S.timer);
+  document.getElementById("app").style.display="none";
+  document.getElementById("login").style.display="flex";
+  document.getElementById("loginErr").textContent="";
+}
+document.getElementById("logoutBtn").onclick = logout;
+
+// ---- bootstrap after auth ----
+async function start(){
+  const me = await api("/auth/me");
+  S.user = me.username; S.roles = me.roles || [];
+  S.caps = new Set(); S.roles.forEach(r => (ROLE_CAPS[r]||[]).forEach(c => S.caps.add(c)));
+  document.getElementById("uName").textContent = S.user;
+  document.getElementById("uRoles").textContent = S.roles.join(" · ");
+  document.getElementById("docsLink").href = apiBase() + "/docs";
+  document.getElementById("login").style.display="none";
+  document.getElementById("app").style.display="flex";
+  gatePanels();
+  tick();
+  if(S.timer) clearInterval(S.timer);
+  S.timer = setInterval(tick, 3000);
+}
+
+function gatePanels(){
+  const showJobs = can("view_jobs"), showStats = can("view_stats");
+  document.getElementById("jobsPanel").style.display = showJobs ? "flex":"none";
+  document.getElementById("detailPanel").style.display = showJobs ? "flex":"none";
+  document.getElementById("devicesPanel").style.display = showStats ? "flex":"none";
+  document.getElementById("agentsPanel").style.display = showStats ? "flex":"none";
+  const admin = can("manage_users") || can("manage_agents");
+  document.getElementById("adminPanel").style.display = admin ? "flex":"none";
+  if(admin) renderAdmin();
+  // Jobs-panel controls: "Clear finished" purges terminal jobs (SubmitJobs).
+  const jc=document.getElementById("jobsCtl");
+  if(showJobs && can("submit_jobs")){
+    jc.innerHTML = `<button class="danger" id="clearBtn" title="Delete completed/exhausted/cancelled/error jobs">Clear finished</button>`;
+    document.getElementById("clearBtn").onclick = clearFinished;
+  } else jc.innerHTML = "";
+  const hints=[];
+  if(!showJobs) hints.push("your role has no job-view capability");
+  if(!showStats) hints.push("no stats capability");
+  document.getElementById("roleHint").textContent = hints.length ? ("note: "+hints.join(", ")) : "";
+}
+
+// ---- clock ----
+setInterval(()=>{ document.getElementById("clock").textContent = new Date().toISOString().replace("T"," ").replace(/\.\d+Z$/," UTC"); }, 1000);
+
+// ---- main refresh ----
+async function tick(){
+  const jobs = [];
+  try{
+    if(can("view_jobs")) renderJobs(await api("/jobs"));
+    if(can("view_stats")) renderDevices(await api("/devices"));
+    if(can("view_stats")) renderAgents(await api("/agents"));
+    if(can("view_jobs") && S.selected) renderChunks(await api("/jobs/"+S.selected+"/tasks"));
+    document.getElementById("lastUpd").textContent = "updated " + new Date().toLocaleTimeString();
+  }catch(err){ if(String(err.message)!=="unauthorized") flash("refresh error: "+err.message, true); }
+}
+document.addEventListener("keydown", e=>{ if((e.key==="r"||e.key==="R") && S.token && document.activeElement.tagName!=="INPUT") tick(); });
+
+let JOBS = [];
+function renderJobs(jobs){
+  JOBS = jobs;
+  document.getElementById("cRunning").textContent = jobs.filter(j=>j.state==="running").length + " running";
+  document.getElementById("cQueued").textContent  = jobs.filter(j=>j.state==="queued").length + " queued";
+  const body=document.getElementById("jobsBody");
+  if(!jobs.length){ body.innerHTML = `<tr><td colspan="6" class="empty">no jobs in the queue</td></tr>`; return; }
+  body.innerHTML = jobs.map(j=>`
+    <tr data-id="${esc(j.id)}" class="${j.id===S.selected?"rowsel":""}">
+      <td>${esc(j.name)}</td>
+      <td>${stateEl(j.state)}</td>
+      <td>${bar(j.progress, j.state)}</td>
+      <td class="num ${j.speed>0?"":"dim"}">${fmtSpeed(j.speed)}</td>
+      <td class="num ${j.est_completion?"warn":"dim"}">${fmtEta(j.est_completion)}</td>
+      <td class="num">${j.cracked}/${j.total}</td>
+    </tr>`).join("");
+  [...body.querySelectorAll("tr[data-id]")].forEach(tr=>tr.onclick=()=>selectJob(tr.getAttribute("data-id")));
+  if(S.selected){ const j=jobs.find(x=>x.id===S.selected); if(j) renderDetailSummary(j); }
+}
+
+function selectJob(id){ S.selected=id; renderJobs(JOBS);
+  const j=JOBS.find(x=>x.id===id); if(j) renderDetailSummary(j);
+  api("/jobs/"+id+"/tasks").then(renderChunks).catch(()=>{}); }
+
+function renderDetailSummary(j){
+  document.getElementById("detailTitle").textContent = "Job · " + j.name;
+  document.getElementById("detailSummary").innerHTML =
+    `${stateEl(j.state)} <span class="num">${Math.round(j.progress*100)}%</span>`+
+    `<span class="dim">· ${fmtSpeed(j.speed)}</span>`+
+    `<span class="warn">· ETA ${fmtEta(j.est_completion)}</span>`+
+    `<span class="accent">· ${j.cracked}/${j.total} cracked</span>`;
+  const ctl=document.getElementById("detailCtl");
+  if(can("submit_jobs")){
+    ctl.innerHTML = `<button data-a="pause">pause</button><button data-a="resume">resume</button><button class="danger" data-a="cancel">cancel</button>`;
+    [...ctl.querySelectorAll("button")].forEach(b=>b.onclick=()=>jobAction(j.id, b.getAttribute("data-a")));
+  } else ctl.innerHTML="";
+}
+async function jobAction(id, a){ try{ await api("/jobs/"+id+"/"+a,{method:"POST"}); flash("job "+a+" requested"); tick(); }
+  catch(err){ flash(a+" failed: "+err.message, true); } }
+async function clearFinished(){
+  if(!confirm("Delete all finished jobs (completed, exhausted, cancelled, error) and their tasks? Cracked hashes are kept.")) return;
+  try{ const r=await api("/jobs/clear",{method:"POST"}); flash("cleared "+r.cleared+" finished job(s)"); if(S.selected){S.selected=null;} tick(); }
+  catch(err){ flash("clear failed: "+err.message, true); }
+}
+
+function renderChunks(tasks){
+  const body=document.getElementById("chunksBody");
+  if(!tasks.length){ body.innerHTML=`<tr><td colspan="5" class="empty">no chunks</td></tr>`; document.getElementById("detailAgg").textContent=""; return; }
+  body.innerHTML = tasks.map((c,i)=>`
+    <tr><td class="dim">#${i+1}</td>
+    <td class="num">${shortNum(c.keyspace_offset)}..${shortNum(c.keyspace_offset+c.keyspace_len)}</td>
+    <td>${bar(c.progress, c.state)}</td>
+    <td class="num ${c.speed>0?"":"dim"}">${fmtSpeed(c.speed)}</td>
+    <td>${stateEl(c.state)}</td></tr>`).join("");
+  const total=tasks.reduce((a,c)=>a+(+c.keyspace_len||0),0);
+  const done=tasks.reduce((a,c)=>a+(c.state==="done"?(+c.keyspace_len||0):c.progress*(+c.keyspace_len||0)),0);
+  const running=tasks.filter(c=>c.state==="running").length;
+  document.getElementById("detailAgg").innerHTML = total>0
+    ? `keyspace <span class="num">${shortNum(Math.round(done))} / ${shortNum(total)}</span> · ${shortNum(total-Math.round(done))} left · <span class="good">${running} chunk(s) running in parallel</span>`
+    : `<span class="good">${running} chunk(s) running</span>`;
+}
+
+function renderDevices(devs){
+  document.getElementById("devNote").textContent = devs.length ? (devs.length+" device(s)") : "";
+  const body=document.getElementById("devBody");
+  if(!devs.length){ body.innerHTML=`<tr><td colspan="6" class="empty">no devices sampled yet</td></tr>`; return; }
+  body.innerHTML = devs.map(d=>{
+    const tc = d.temp>=85?"bad":d.temp>=75?"warn":"good";
+    return `<tr><td>${esc(d.name)}</td>
+      <td class="num ${tc}">${d.temp}°C</td>
+      <td>${bar((+d.util||0)/100,"running")}</td>
+      <td class="accent num">${esc(d.pstate||"—")}</td>
+      <td class="num">${d.clock_mhz>0?d.clock_mhz+" MHz":"—"}</td>
+      <td class="num">${fmtSpeed(d.hashrate)}</td></tr>`;
+  }).join("");
+}
+
+function renderAgents(agents){
+  document.getElementById("agNote").textContent = agents.length ? (agents.filter(a=>a.status==="online").length+" online / "+agents.length+" enrolled") : "";
+  const body=document.getElementById("agBody");
+  if(!agents.length){ body.innerHTML=`<tr><td colspan="4" class="empty">no agents enrolled</td></tr>`; return; }
+  body.innerHTML = agents.map(a=>`<tr>
+    <td>${esc(a.name)}</td><td>${stateEl(a.status)}</td>
+    <td class="dim num">${a.enrolled_at?new Date(a.enrolled_at).toLocaleString():"—"}</td>
+    <td class="dim num">${a.last_seen?new Date(a.last_seen).toLocaleString():"—"}</td></tr>`).join("");
+}
+
+// ---- admin panel (manage_agents / manage_users) ----
+function renderAdmin(){
+  const b=document.getElementById("adminBody"); let h="";
+  if(can("manage_agents")){
+    h += `<form class="form" id="claimForm"><div class="row"><strong>Enroll an agent</strong></div>
+      <div class="row"><input id="claimName" placeholder="agent name e.g. gpu-box-1" />
+      <button class="go" type="submit">Mint claim token</button></div>
+      <div class="result" id="claimOut"></div></form>`;
+  }
+  if(can("manage_users")){
+    h += `<form class="form" id="userForm"><div class="row"><strong>Create a user</strong></div>
+      <div class="row"><input id="nuUser" placeholder="username" /><input id="nuPass" type="password" placeholder="password" /></div>
+      <div class="roles">`+ALL_ROLES.map(r=>`<label><input type="checkbox" value="${r}" class="nuRole" /> ${r}</label>`).join("")+`</div>
+      <div class="row"><button class="go" type="submit">Create user</button></div>
+      <div class="result" id="userOut"></div></form>`;
+  }
+  b.innerHTML = h;
+  const cf=document.getElementById("claimForm");
+  if(cf) cf.onsubmit = async e=>{ e.preventDefault();
+    try{ const r=await api("/admin/agent-claims",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:document.getElementById("claimName").value})});
+      document.getElementById("claimOut").textContent = "claim token: "+r.claim_token+"  (single-use)"; }
+    catch(err){ document.getElementById("claimOut").textContent="error: "+err.message; } };
+  const uf=document.getElementById("userForm");
+  if(uf) uf.onsubmit = async e=>{ e.preventDefault();
+    const roles=[...document.querySelectorAll(".nuRole:checked")].map(x=>x.value);
+    try{ await api("/admin/users",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({username:document.getElementById("nuUser").value,password:document.getElementById("nuPass").value,roles})});
+      document.getElementById("userOut").textContent="user created"; }
+    catch(err){ document.getElementById("userOut").textContent="error: "+err.message; } };
+}
+
+// ---- resume a saved session ----
+(function(){ const t=localStorage.getItem("fj_token"); if(t){ S.token=t; start().catch(()=>logout()); } })();
+</script>
+</body>
+</html>

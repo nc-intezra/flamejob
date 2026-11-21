@@ -43,6 +43,12 @@ pub struct Dashboard {
     pub chunks: Vec<ChunkRow>,
     pub devices: Vec<Device>,
     pub telemetry_live: bool,
+    /// Finished jobs are hidden from the jobs list (local view filter).
+    pub hide_finished: bool,
+    /// The logged-in user may submit/clear jobs (SubmitJobs capability).
+    pub can_submit: bool,
+    /// Total jobs reported by the server before any local filtering.
+    pub total_jobs: usize,
 }
 
 impl Dashboard {
@@ -173,6 +179,7 @@ impl Dashboard {
                 hashrate: 600_000_000,
             },
         ];
+        let total_jobs = jobs.len();
         Dashboard {
             server: "https://crack01.lab:8443".into(),
             now,
@@ -181,6 +188,17 @@ impl Dashboard {
             chunks,
             devices,
             telemetry_live: false,
+            hide_finished: false,
+            can_submit: true,
+            total_jobs,
         }
     }
+}
+
+/// Persistent, cross-frame UI state for the scrollable tables. Lives in the run
+/// loop (ratatui's stateful tables keep their scroll offset here between draws).
+#[derive(Default)]
+pub struct UiState {
+    pub jobs: ratatui::widgets::TableState,
+    pub chunks: ratatui::widgets::TableState,
 }

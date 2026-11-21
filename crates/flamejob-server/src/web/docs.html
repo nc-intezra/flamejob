@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>flamejob API · reference</title>
+  <link rel="icon" href="data:," />
+  <!-- RapiDoc renders the OpenAPI document served at ./openapi.json (same origin). -->
+  <script type="module" src="https://unpkg.com/rapidoc@9.3.4/dist/rapidoc-min.js"></script>
+  <style>
+    html, body { margin: 0; height: 100%; background: #18191e; }
+  </style>
+</head>
+<body>
+  <rapi-doc
+    spec-url="./openapi.json"
+    theme="dark"
+    bg-color="#18191e"
+    text-color="#cdd2dc"
+    header-color="#21232a"
+    primary-color="#61afef"
+    nav-bg-color="#21232a"
+    render-style="read"
+    schema-style="table"
+    show-header="true"
+    allow-authentication="true"
+    allow-server-selection="false"
+    regular-font="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif"
+    mono-font="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+    <div slot="nav-logo" style="display:flex;align-items:center;gap:.5rem;padding:.4rem .2rem">
+      <span style="color:#61afef;font-weight:700;font-family:ui-monospace,monospace">flamejob</span>
+      <span style="color:#787e8c;font-size:.8rem">API reference</span>
+    </div>
+  </rapi-doc>
+</body>
+</html>

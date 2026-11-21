@@ -11,8 +11,19 @@ fn enum_str<T: serde::Serialize>(v: &T) -> String {
         .unwrap_or_default()
 }
 
-pub async fn fetch_dashboard(client: &Client, server: &str, selected: usize) -> Result<Dashboard> {
+fn is_finished(state: &str) -> bool {
+    matches!(state, "completed" | "exhausted" | "cancelled" | "error")
+}
+
+pub async fn fetch_dashboard(
+    client: &Client,
+    server: &str,
+    selected: usize,
+    hide_finished: bool,
+    can_submit: bool,
+) -> Result<Dashboard> {
     let jobs_api = client.list_jobs().await?;
+    let total_jobs = jobs_api.len();
     let jobs: Vec<JobRow> = jobs_api
         .iter()
         .map(|j| JobRow {
@@ -26,9 +37,10 @@ pub async fn fetch_dashboard(client: &Client, server: &str, selected: usize) -> 
             cracked: j.cracked,
             total: j.total,
         })
+        .filter(|j| !hide_finished || !is_finished(&j.state))
         .collect();
     let selected = selected.min(jobs.len().saturating_sub(1));
-    let chunks = match jobs_api.get(selected) {
+    let chunks = match jobs.get(selected) {
         Some(j) => client
             .list_job_tasks(j.id)
             .await
@@ -69,5 +81,8 @@ pub async fn fetch_dashboard(client: &Client, server: &str, selected: usize) -> 
         chunks,
         devices,
         telemetry_live,
+        hide_finished,
+        can_submit,
+        total_jobs,
     })
 }

@@ -1,9 +1,14 @@
-//! Phase 1 scheduler with server-side keyspace chunking.
+//! Scheduler with server-side keyspace chunking and multi-agent parallelism.
 //!
 //! A job's keyspace (from `hashcat --keyspace`) is divided into chunk tasks,
-//! each run with `--skip`/`--limit`. On the single box chunks run one at a time;
-//! the same task rows are what Phase 3 will distribute across agents. A job
-//! finishes early as soon as every hash is cracked.
+//! each run with `--skip`/`--limit`. The scheduler keeps up to `Runner::capacity`
+//! chunks of the active job in flight at once, so a single job fans out across
+//! the whole fleet (or across several local hashcat processes). A job finishes
+//! early as soon as every hash is cracked.
+//!
+//! One job is active at a time; its chunks run in parallel. When a job has no
+//! more pending or in-flight chunks it is finalized and the next queued job is
+//! claimed.
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -30,11 +35,18 @@ struct JobInputs {
     total_keyspace: i64,
 }
 
+/// A chunk task currently executing.
+struct Inflight {
+    job_id: Uuid,
+    handle: RunHandle,
+}
+
 pub struct Scheduler {
     state: AppState,
     runner: Arc<dyn Runner>,
-    running: Mutex<HashMap<Uuid, RunHandle>>, // job_id -> current chunk handle
+    inflight: Mutex<HashMap<Uuid, Inflight>>, // task_id -> running chunk
     inputs: Mutex<HashMap<Uuid, Arc<JobInputs>>>, // job_id -> shared inputs
+    progress: Mutex<HashMap<Uuid, (f64, i64)>>, // task_id -> (progress, speed) for live ETA
     retries: Mutex<HashMap<Uuid, u32>>,       // task_id -> attempts
     max_retries: u32,
     chunk_size: i64,
@@ -50,6 +62,7 @@ pub fn spawn(state: AppState) {
             state.cfg.hashcat.binary.clone(),
             state.cfg.hashcat.workload,
             state.cfg.hashcat.data_dir.clone(),
+            state.cfg.scheduler.local_parallelism,
         ))
     };
     let chunk_size = state.cfg.scheduler.chunk_size;
@@ -57,8 +70,9 @@ pub fn spawn(state: AppState) {
     let sched = Arc::new(Scheduler {
         state,
         runner,
-        running: Mutex::new(HashMap::new()),
+        inflight: Mutex::new(HashMap::new()),
         inputs: Mutex::new(HashMap::new()),
+        progress: Mutex::new(HashMap::new()),
         retries: Mutex::new(HashMap::new()),
         max_retries: 2,
         chunk_size,
@@ -110,34 +124,37 @@ impl Scheduler {
     }
 
     async fn tick(self: &Arc<Self>) -> anyhow::Result<()> {
-        // Reconcile cancel/pause against the live chunk process.
-        let ids: Vec<Uuid> = self.running.lock().await.keys().copied().collect();
-        for job_id in ids {
+        // 1) Reconcile cancel/pause against the live chunk processes of each job
+        //    that currently has work in flight.
+        for job_id in self.inflight_jobs().await {
             let st = self.job_state(job_id).await;
             if st == "cancelled" || st == "paused" {
-                let handle = self.running.lock().await.get(&job_id).cloned();
-                if let Some(h) = handle {
+                for h in self.inflight_handles_for(job_id).await {
                     let _ = self.runner.cancel(&h).await;
                 }
             }
         }
-        // One job at a time on the single box. Resume an in-flight job's next
-        // chunk before claiming a new job, so a job's chunks run to completion.
-        if self.running.lock().await.is_empty() {
-            if let Some(job_id) = self.resumable_job().await {
-                if self.inputs.lock().await.contains_key(&job_id) {
-                    self.start_next_chunk(job_id).await;
-                } else {
-                    // Inputs lost (e.g. restart mid-job): re-queue to rebuild.
-                    let _ = sqlx::query("UPDATE jobs SET state = 'queued' WHERE id = $1")
-                        .bind(job_id)
-                        .execute(&self.state.db)
-                        .await;
-                }
+
+        // 2) Backstop: finalize any running job whose chunks are all terminal
+        //    (covers a mid-job restart where the consume loops were lost).
+        self.finalize_completed_jobs().await;
+
+        // 3) Keep the active job's chunks filled to capacity; only claim a new
+        //    job once no running job has remaining work (one job at a time).
+        if let Some(job_id) = self.running_job_with_work().await {
+            if self.inputs.lock().await.contains_key(&job_id) {
+                self.fill_capacity(job_id).await;
             } else {
-                self.claim_and_start().await?;
+                // Inputs lost (e.g. restart mid-job): re-queue to rebuild.
+                let _ = sqlx::query("UPDATE jobs SET state = 'queued' WHERE id = $1")
+                    .bind(job_id)
+                    .execute(&self.state.db)
+                    .await;
             }
+        } else {
+            self.claim_and_start().await?;
         }
+
         self.refresh_metrics().await;
         Ok(())
     }
@@ -215,7 +232,8 @@ impl Scheduler {
             state: JobState::Running,
         });
         tracing::info!(%job_id, chunks = chunks.len(), "job running (chunked)");
-        self.start_next_chunk(job_id).await;
+        // Fan the first wave of chunks across available capacity immediately.
+        self.fill_capacity(job_id).await;
         Ok(())
     }
 
@@ -302,14 +320,30 @@ impl Scheduler {
         })
     }
 
-    /// Start the lowest-offset pending chunk, or finalize the job if none remain.
-    /// Returns true if a chunk was started.
-    async fn start_next_chunk(self: &Arc<Self>, job_id: Uuid) -> bool {
-        let inputs = match self.inputs.lock().await.get(&job_id).cloned() {
-            Some(i) => i,
-            None => return false,
-        };
-        let next: Option<(Uuid, i64, i64)> = sqlx::query_as(
+    /// Start pending chunks of `job_id` until the number in flight for that job
+    /// reaches the runner's current capacity (fleet slots, or local parallelism).
+    async fn fill_capacity(self: &Arc<Self>, job_id: Uuid) {
+        if !self.inputs.lock().await.contains_key(&job_id) {
+            return;
+        }
+        let want = self.runner.capacity().await.max(1);
+        loop {
+            if self.inflight_count_for(job_id).await >= want {
+                break;
+            }
+            match self.next_pending_chunk(job_id).await {
+                Some((task_id, offset, len)) => {
+                    if !self.start_chunk(job_id, task_id, offset, len).await {
+                        break;
+                    }
+                }
+                None => break,
+            }
+        }
+    }
+
+    async fn next_pending_chunk(&self, job_id: Uuid) -> Option<(Uuid, i64, i64)> {
+        sqlx::query_as(
             "SELECT id, keyspace_offset, keyspace_len FROM tasks \
              WHERE job_id = $1 AND state = 'pending' ORDER BY keyspace_offset LIMIT 1",
         )
@@ -317,18 +351,21 @@ impl Scheduler {
         .fetch_optional(&self.state.db)
         .await
         .ok()
-        .flatten();
-        let Some((task_id, offset, len)) = next else {
-            let (total, cracked) = self.counts(job_id).await;
-            let st = if total > 0 && cracked >= total {
-                "completed"
-            } else {
-                "exhausted"
-            };
-            self.set_job_terminal(job_id, st, None).await;
-            return false;
-        };
+        .flatten()
+    }
 
+    /// Launch one specific pending chunk. Returns true if it is now in flight.
+    async fn start_chunk(
+        self: &Arc<Self>,
+        job_id: Uuid,
+        task_id: Uuid,
+        offset: i64,
+        len: i64,
+    ) -> bool {
+        let inputs = match self.inputs.lock().await.get(&job_id).cloned() {
+            Some(i) => i,
+            None => return false,
+        };
         let task = RunnerTask {
             task_id,
             hash_type: inputs.hash_type,
@@ -340,11 +377,16 @@ impl Scheduler {
             keyspace_len: len,
             extra_args: inputs.extra_args.clone(),
         };
+        // Mark running before dispatch so the next fill iteration won't re-pick it.
         let _ = self.set_task(task_id, "running").await;
         let (tx, rx) = mpsc::channel(64);
         match self.runner.start(&task, tx).await {
             Ok(handle) => {
-                self.running.lock().await.insert(job_id, handle);
+                self.inflight
+                    .lock()
+                    .await
+                    .insert(task_id, Inflight { job_id, handle });
+                self.progress.lock().await.insert(task_id, (0.0, 0));
                 let me = self.clone();
                 tokio::spawn(me.consume(job_id, task_id, rx));
                 tracing::info!(%job_id, %task_id, offset, len, "chunk running");
@@ -352,9 +394,7 @@ impl Scheduler {
             }
             Err(e) => {
                 tracing::error!(%job_id, %task_id, error = %e, "chunk failed to start");
-                let _ = self.set_task(task_id, "failed").await;
-                self.set_job_terminal(job_id, "error", Some("chunk failed to start"))
-                    .await;
+                self.handle_chunk_failure(job_id, task_id).await;
                 false
             }
         }
@@ -377,10 +417,11 @@ impl Scheduler {
             .bind(task_id)
             .execute(&self.state.db)
             .await;
-            let eta = self
-                .compute_job_eta(job_id, task_id, u.progress, u.speed)
+            self.progress
+                .lock()
                 .await
-                .or(u.eta);
+                .insert(task_id, (u.progress, u.speed));
+            let eta = self.compute_job_eta(job_id).await.or(u.eta);
             if let Some(eta) = eta {
                 let _ = sqlx::query("UPDATE jobs SET est_completion = $1 WHERE id = $2")
                     .bind(eta)
@@ -401,15 +442,31 @@ impl Scheduler {
     }
 
     async fn finalize_chunk(self: &Arc<Self>, job_id: Uuid, task_id: Uuid, last: TaskState) {
+        // This chunk is no longer running.
+        self.inflight.lock().await.remove(&task_id);
+        self.progress.lock().await.remove(&task_id);
+
         match self.job_state(job_id).await.as_str() {
             "cancelled" => {
                 let _ = self.set_task(task_id, "failed").await;
-                self.cleanup(job_id).await;
+                self.maybe_release_inputs(job_id).await;
                 return;
             }
             "paused" => {
                 let _ = self.set_task(task_id, "paused").await;
-                self.cleanup(job_id).await;
+                self.maybe_release_inputs(job_id).await;
+                return;
+            }
+            // Job already finalized by another chunk (early finish, error): just
+            // record this chunk's terminal state.
+            "completed" | "exhausted" | "error" => {
+                let s = if last == TaskState::Done {
+                    "done"
+                } else {
+                    "failed"
+                };
+                let _ = self.set_task(task_id, s).await;
+                self.maybe_release_inputs(job_id).await;
                 return;
             }
             _ => {}
@@ -421,6 +478,7 @@ impl Scheduler {
         let (total, cracked) = self.counts(job_id).await;
         if total > 0 && cracked >= total {
             let _ = self.set_task(task_id, "done").await;
+            self.cancel_inflight_for(job_id).await;
             self.set_job_terminal(job_id, "completed", None).await;
             return;
         }
@@ -434,8 +492,9 @@ impl Scheduler {
             .fetch_one(&self.state.db)
             .await
             .unwrap_or(0);
-            if pending == 0 {
-                // Last chunk done: finalize the whole job.
+            let others = self.inflight_count_for(job_id).await;
+            if pending == 0 && others == 0 {
+                // Last chunk of the job done: finalize the whole job.
                 let (total, cracked) = self.counts(job_id).await;
                 let st = if total > 0 && cracked >= total {
                     "completed"
@@ -443,69 +502,69 @@ impl Scheduler {
                     "exhausted"
                 };
                 self.set_job_terminal(job_id, st, None).await;
-            } else {
-                // Release the slot; the tick loop starts the next pending chunk.
-                self.running.lock().await.remove(&job_id);
             }
+            // else: the tick loop fills the next pending chunk into the free slot.
         } else {
-            let attempts = {
-                let mut m = self.retries.lock().await;
-                let e = m.entry(task_id).or_insert(0);
-                *e += 1;
-                *e
-            };
-            if attempts <= self.max_retries {
-                let _ = self.set_task(task_id, "pending").await; // re-run this chunk
-                tracing::warn!(%job_id, %task_id, attempts, "chunk failed; retrying");
-                self.running.lock().await.remove(&job_id);
-            } else {
-                let _ = self.set_task(task_id, "failed").await;
-                self.set_job_terminal(job_id, "error", Some("chunk failed after retries"))
-                    .await;
-            }
+            self.handle_chunk_failure(job_id, task_id).await;
         }
     }
 
-    /// Per-job ETA: remaining keyspace across all not-done chunks (the running
-    /// chunk counted by its remaining fraction) divided by current speed.
-    async fn compute_job_eta(
-        &self,
-        job_id: Uuid,
-        current_task: Uuid,
-        progress: f64,
-        speed: i64,
-    ) -> Option<DateTime<Utc>> {
-        if speed <= 0 {
-            return None;
+    /// Retry a failed chunk, or fail the whole job once retries are exhausted.
+    async fn handle_chunk_failure(self: &Arc<Self>, job_id: Uuid, task_id: Uuid) {
+        let attempts = {
+            let mut m = self.retries.lock().await;
+            let e = m.entry(task_id).or_insert(0);
+            *e += 1;
+            *e
+        };
+        if attempts <= self.max_retries {
+            let _ = self.set_task(task_id, "pending").await; // re-run this chunk
+            tracing::warn!(%job_id, %task_id, attempts, "chunk failed; retrying");
+        } else {
+            let _ = self.set_task(task_id, "failed").await;
+            self.cancel_inflight_for(job_id).await;
+            self.set_job_terminal(job_id, "error", Some("chunk failed after retries"))
+                .await;
         }
+    }
+
+    /// Per-job ETA: remaining keyspace across all not-done chunks (each in-flight
+    /// chunk counted by its remaining fraction) divided by the *combined* speed
+    /// of the chunks currently running — so parallel chunks shorten the ETA.
+    async fn compute_job_eta(&self, job_id: Uuid) -> Option<DateTime<Utc>> {
         let rows: Vec<(Uuid, String, i64)> =
             sqlx::query_as("SELECT id, state::text, keyspace_len FROM tasks WHERE job_id = $1")
                 .bind(job_id)
                 .fetch_all(&self.state.db)
                 .await
                 .ok()?;
+        let prog = self.progress.lock().await;
         let mut remaining = 0f64;
+        let mut speed = 0i64;
         for (id, state, len) in rows {
             if state == "done" || len <= 0 {
                 continue;
             }
-            if id == current_task {
-                remaining += len as f64 * (1.0 - progress.clamp(0.0, 1.0));
-            } else {
-                remaining += len as f64;
+            let (p, sp) = prog.get(&id).copied().unwrap_or((0.0, 0));
+            remaining += len as f64 * (1.0 - p.clamp(0.0, 1.0));
+            if state == "running" {
+                speed += sp;
             }
         }
-        if remaining <= 0.0 {
+        drop(prog);
+        if speed <= 0 || remaining <= 0.0 {
             return None;
         }
         let secs = remaining / speed as f64;
         Some(Utc::now() + chrono::Duration::milliseconds((secs * 1000.0) as i64))
     }
 
-    async fn resumable_job(&self) -> Option<Uuid> {
+    /// A running job that still has pending or in-flight chunks (the one we fan).
+    async fn running_job_with_work(&self) -> Option<Uuid> {
         sqlx::query_scalar(
             "SELECT j.id FROM jobs j WHERE j.state = 'running' \
-             AND EXISTS (SELECT 1 FROM tasks t WHERE t.job_id = j.id AND t.state = 'pending') \
+             AND EXISTS (SELECT 1 FROM tasks t WHERE t.job_id = j.id \
+                         AND t.state IN ('pending','running')) \
              ORDER BY j.priority, j.created_at LIMIT 1",
         )
         .fetch_optional(&self.state.db)
@@ -514,27 +573,99 @@ impl Scheduler {
         .flatten()
     }
 
+    /// Finalize any job stuck in `running` with no pending/running chunks left
+    /// and nothing in flight (a backstop for finalize_chunk, e.g. after restart).
+    async fn finalize_completed_jobs(&self) {
+        let ids: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT j.id FROM jobs j WHERE j.state = 'running' \
+             AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.job_id = j.id \
+                             AND t.state IN ('pending','running'))",
+        )
+        .fetch_all(&self.state.db)
+        .await
+        .unwrap_or_default();
+        for job_id in ids {
+            if self.inflight_count_for(job_id).await > 0 {
+                continue;
+            }
+            let (total, cracked) = self.counts(job_id).await;
+            let st = if total > 0 && cracked >= total {
+                "completed"
+            } else {
+                "exhausted"
+            };
+            self.set_job_terminal(job_id, st, None).await;
+        }
+    }
+
     async fn set_job_terminal(&self, job_id: Uuid, state: &str, error: Option<&str>) {
-        let _ = sqlx::query(
-            "UPDATE jobs SET state = $2::job_state, error = $3, finished_at = now() WHERE id = $1",
+        // Idempotent: only the first transition out of a non-terminal state wins,
+        // so concurrent chunk finalizers don't double-finalize or double-publish.
+        let changed = sqlx::query(
+            "UPDATE jobs SET state = $2::job_state, error = $3, finished_at = now() \
+             WHERE id = $1 AND state NOT IN ('completed','exhausted','cancelled','error')",
         )
         .bind(job_id)
         .bind(state)
         .bind(error)
         .execute(&self.state.db)
-        .await;
-        if let Ok(js) =
-            serde_json::from_value::<JobState>(serde_json::Value::String(state.to_string()))
-        {
-            self.state.publish(Event::JobUpdated { job_id, state: js });
+        .await
+        .map(|r| r.rows_affected() > 0)
+        .unwrap_or(false);
+        if changed {
+            if let Ok(js) =
+                serde_json::from_value::<JobState>(serde_json::Value::String(state.to_string()))
+            {
+                self.state.publish(Event::JobUpdated { job_id, state: js });
+            }
+            tracing::info!(%job_id, state, "job finalized");
         }
         self.cleanup(job_id).await;
-        tracing::info!(%job_id, state, "job finalized");
     }
 
     async fn cleanup(&self, job_id: Uuid) {
-        self.running.lock().await.remove(&job_id);
+        self.inflight.lock().await.retain(|_, i| i.job_id != job_id);
         self.inputs.lock().await.remove(&job_id);
+    }
+
+    /// Drop a finished job's shared inputs once no chunk of it is still running.
+    async fn maybe_release_inputs(&self, job_id: Uuid) {
+        if self.inflight_count_for(job_id).await == 0 {
+            self.inputs.lock().await.remove(&job_id);
+        }
+    }
+
+    async fn inflight_jobs(&self) -> Vec<Uuid> {
+        let g = self.inflight.lock().await;
+        let mut v: Vec<Uuid> = g.values().map(|i| i.job_id).collect();
+        v.sort();
+        v.dedup();
+        v
+    }
+
+    async fn inflight_handles_for(&self, job_id: Uuid) -> Vec<RunHandle> {
+        self.inflight
+            .lock()
+            .await
+            .values()
+            .filter(|i| i.job_id == job_id)
+            .map(|i| i.handle.clone())
+            .collect()
+    }
+
+    async fn inflight_count_for(&self, job_id: Uuid) -> usize {
+        self.inflight
+            .lock()
+            .await
+            .values()
+            .filter(|i| i.job_id == job_id)
+            .count()
+    }
+
+    async fn cancel_inflight_for(&self, job_id: Uuid) {
+        for h in self.inflight_handles_for(job_id).await {
+            let _ = self.runner.cancel(&h).await;
+        }
     }
 
     async fn counts(&self, job_id: Uuid) -> (i32, i32) {
@@ -611,7 +742,7 @@ impl Scheduler {
                 metrics::gauge!("flamejob_jobs", "state" => state).set(n as f64);
             }
         }
-        let running = self.running.lock().await.len() as f64;
+        let running = self.inflight.lock().await.len() as f64;
         metrics::gauge!("flamejob_tasks_running").set(running);
         let agents = self.state.agents.connected_count().await as f64;
         metrics::gauge!("flamejob_agents_connected").set(agents);

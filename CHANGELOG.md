@@ -4,6 +4,38 @@ All notable changes to flamejob are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Multi-agent job parallelism.** The scheduler now fans a single job's chunks
+  across the whole fleet instead of running one chunk at a time. It keeps as many
+  chunks in flight as there is capacity — the sum of agents' advertised free
+  slots for the remote runner, or `[scheduler].local_parallelism` (default 1)
+  hashcat processes for the local runner — via a new `Runner::capacity` method.
+  Per-job progress and ETA aggregate across the running chunks, so adding agents
+  speeds up a single job. One job still runs at a time.
+- `[scheduler].local_parallelism` config key (and `FJ_SCHEDULER__LOCAL_PARALLELISM`).
+- **Web dashboard.** A browser UI on its own listener (`[web]`, default `:9443`,
+  plain HTTP or rustls TLS) mirroring the TUI: jobs, chunk breakdown, devices and
+  agents, with the signed-in username, a log-out button and a light/dark theme
+  toggle. Panels are capability-gated so each role sees the same metrics it can
+  access. The API port now sends CORS headers so the browser can call it.
+- **Browseable API reference** at `GET /docs` (RapiDoc) bound to `GET /openapi.json`;
+  the OpenAPI document now describes every operation (paths + bearer security),
+  not just the DTO schemas.
+- **Clear finished jobs**: `POST /jobs/clear` (requires `SubmitJobs`) removes
+  completed/exhausted/cancelled/error jobs and their tasks (cracked hashes kept).
+  Exposed in the TUI (`C`) and the web dashboard; `ClearedJobs` DTO and
+  `client.clear_finished_jobs()`.
+- **TUI scrolling**: the jobs and chunk tables now scroll with a scrollbar when
+  they overflow the pane, keeping the selection (and active chunks) in view. New
+  keys: `f` hide/show finished jobs, `C` clear finished (operators/superadmin).
+
+### Changed
+- Job finalization is now idempotent (a guarded state transition), so concurrent
+  chunk completions can't double-finalize or double-publish a job event.
+- The TUI gates job controls by the signed-in user's capabilities (via `/auth/me`).
+
 ## [1.0.4] - 2026-11-21
 
 Makes a plain `flamejob-agent` install produce a working worker (mirroring the

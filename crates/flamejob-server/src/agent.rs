@@ -195,6 +195,16 @@ impl AgentHub {
     pub async fn connected_count(&self) -> usize {
         self.inner.lock().await.conns.len()
     }
+
+    /// Total concurrent chunk capacity of the fleet right now: free slots plus
+    /// slots already busy with assigned tasks. The scheduler uses this to decide
+    /// how many of a job's chunks to keep in flight, so one job fans out across
+    /// every agent. Returns 0 when no agent is connected.
+    pub async fn capacity(&self) -> usize {
+        let g = self.inner.lock().await;
+        let free: u32 = g.conns.values().map(|c| c.slots).sum();
+        free as usize + g.assigned.len()
+    }
 }
 
 // ======================= remote runner =======================
@@ -286,11 +296,22 @@ impl Runner for RemoteRunner {
         self.hub.cancel_task(handle.task_id).await;
         Ok(())
     }
+
+    async fn capacity(&self) -> usize {
+        self.hub.capacity().await
+    }
 }
 
 // ======================= HTTP: enrollment & admin =======================
 
 /// POST /agent/enroll — unauthenticated; gated by a one-time claim token.
+#[utoipa::path(
+    post, path = "/agent/enroll", tag = "agents", request_body = EnrollRequest,
+    responses(
+        (status = 200, body = EnrollResponse, description = "CA-signed client cert"),
+        (status = 401, description = "Invalid or used claim token")
+    )
+)]
 pub async fn enroll(
     State(state): State<AppState>,
     Json(req): Json<EnrollRequest>,
@@ -330,6 +351,11 @@ pub async fn enroll(
 }
 
 /// POST /admin/agent-claims — mint a one-time enrollment token.
+#[utoipa::path(
+    post, path = "/admin/agent-claims", tag = "agents", security(("bearer" = [])),
+    request_body = AgentClaimCreate,
+    responses((status = 201, body = AgentClaim), (status = 403, description = "Missing ManageAgents"))
+)]
 pub async fn create_claim(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -358,6 +384,10 @@ pub async fn create_claim(
 }
 
 /// GET /agents — list enrolled agents.
+#[utoipa::path(
+    get, path = "/agents", tag = "agents", security(("bearer" = [])),
+    responses((status = 200, body = Vec<AgentInfo>, description = "Enrolled agents and status"))
+)]
 #[allow(clippy::type_complexity)]
 pub async fn list_agents(
     State(state): State<AppState>,
@@ -700,5 +730,34 @@ mod tests {
             extra_args: vec![],
         };
         assert!(hub.keyspace_probe(task).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn capacity_tracks_fleet_slots() {
+        let hub = AgentHub::new();
+        let agent = Uuid::new_v4();
+        let (tx, _rx) = mpsc::channel(8);
+        hub.register(agent, "gpu-1".into(), tx).await;
+        // Connected but no slots advertised yet.
+        assert_eq!(hub.capacity().await, 0);
+        hub.set_ready(agent, 3).await;
+        assert_eq!(hub.capacity().await, 3);
+
+        // Dispatching a chunk moves one slot free -> assigned; total holds at 3.
+        let (stx, _srx) = mpsc::channel(8);
+        let task = AgentTask {
+            task_id: Uuid::new_v4(),
+            hash_type: 0,
+            attack_mode: 3,
+            hashes: vec![],
+            mask: Some("?d?d?d?d".into()),
+            wordlist: None,
+            rules: vec![],
+            keyspace_offset: 0,
+            keyspace_len: 0,
+            extra_args: vec![],
+        };
+        hub.dispatch(task, stx).await;
+        assert_eq!(hub.capacity().await, 3);
     }
 }

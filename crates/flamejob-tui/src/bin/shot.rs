@@ -4,7 +4,7 @@
 //! or ~/.config/flamejob/token).
 use ratatui::{backend::TestBackend, style::Modifier, Terminal};
 
-use flamejob_tui::{model::Dashboard, ui};
+use flamejob_tui::{model::Dashboard, model::UiState, ui};
 
 fn live_token() -> Option<String> {
     if let Ok(t) = std::env::var("FJ_TOKEN") {
@@ -25,14 +25,17 @@ fn main() {
         let server = std::env::var("FJ_SERVER").expect("FJ_SERVER");
         let client = flamejob_client::Client::new(&server).with_token(live_token());
         let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(flamejob_tui::app::fetch_dashboard(&client, &server, 0))
-            .expect("fetch dashboard")
+        rt.block_on(flamejob_tui::app::fetch_dashboard(
+            &client, &server, 0, false, true,
+        ))
+        .expect("fetch dashboard")
     } else {
         Dashboard::sample()
     };
 
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-    term.draw(|f| ui::render(f, &d)).unwrap();
+    let mut st = UiState::default();
+    term.draw(|f| ui::render(f, &d, &mut st)).unwrap();
     let buf = term.backend().buffer().clone();
     let mut grid = Vec::new();
     for y in 0..h {
