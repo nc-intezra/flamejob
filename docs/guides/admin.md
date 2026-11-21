@@ -208,12 +208,13 @@ The token is single-use; later restarts reconnect with the stored cert (drop `--
 **4. Submit work.**
 
 ```
-fj hashlist create --name demo -m 1000        # -> <hashlist-id>
+fj file add rockyou.txt --kind wordlist       # -> uploaded <file-id> (rockyou.txt)
+fj hashlist create --name demo -m 1000         # -> <hashlist-id>
 fj hashlist import <hashlist-id> hashes.txt
 fj job submit --hashlist <hashlist-id> --name demo-run --attack-mode 0 --wordlist <file-id>
 ```
 
-The scheduler chunks the keyspace and dispatches chunks to the agent. Remember that a wordlist attack needs the wordlist present on the agent host; mask attacks (`-a 3`) are self-contained.
+`--wordlist` takes the file **id** printed by `fj file add` (a UUID), not a filename — pass `rockyou.txt` and the job ends up with no wordlist, failing at launch with "job has neither wordlist nor mask." The scheduler chunks the keyspace and dispatches chunks to the agent. Remember that a wordlist attack needs the wordlist present on the agent host; mask attacks (`-a 3`) are self-contained.
 
 **5. Watch it.** Run `FJ_SERVER=http://control-plane:8443 flamejob-tui` — the job shows its per-chunk progress and ETA, and the agent's GPUs appear in the devices panel.
 
