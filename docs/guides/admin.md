@@ -6,7 +6,7 @@ flamejob is a distributed hashcat job queue. A single control-plane service, `fl
 
 This guide is for the people who stand that system up and keep it running: the **superadmin** (the local break-glass account) and **admin** roles, plus anyone responsible for deployment, configuration, user and agent management, and monitoring. Running and watching jobs day to day is covered separately in the **Operator Guide** and the **Viewer Guide**.
 
-It documents flamejob **1.0.0**. A web UI and directory-mapped (LDAP/AD) RBAC are on the roadmap but are not part of this release; where they come up, they are flagged as planned.
+It documents flamejob **1.0.2**. A web UI and directory-mapped (LDAP/AD) RBAC are on the roadmap but are not part of this release; where they come up, they are flagged as planned.
 
 ## 2. Concepts primer
 
@@ -43,9 +43,22 @@ All state lives in one PostgreSQL database. Cracking is performed by hashcat, in
 
 ## 4. Deployment & installation
 
-**Prerequisites.** A Linux host (the installer targets Ubuntu/Debian), `hashcat` on `PATH`, and PostgreSQL 16. For GPU telemetry you also need the NVIDIA driver — the installer warns if `nvidia-smi` is missing; without it, flamejob still runs and reports host CPU/RAM only.
+**Prerequisites.** A Linux host — the packages and installer target **Ubuntu 22.04 or newer** — with `hashcat` on `PATH` and **PostgreSQL 16**. Ubuntu 22.04's own archive ships PostgreSQL 14, so for a local database on 22.04 add the PGDG repo (`apt.postgresql.org`) and install `postgresql-16`, or point at an external 16+ server. For GPU telemetry you also need the NVIDIA driver — without it flamejob still runs and reports host CPU/RAM only.
 
-There are three ways to run the control plane.
+There are four ways to run flamejob; the `.deb` packages are the recommended path.
+
+**Debian packages (recommended).** Each GitHub release attaches four `.deb`s, one per tool: `flamejob-server`, `flamejob-cli` (`fj`), `flamejob-tui`, and `flamejob-agent` (`fj-agent`). Install the ones a host needs with `apt` (use `./` and `apt`, not `dpkg -i`, so dependencies resolve):
+
+```
+# control-plane host
+sudo apt install ./flamejob-server_1.0.2-1_amd64.deb \
+                 ./flamejob-cli_1.0.2-1_amd64.deb \
+                 ./flamejob-tui_1.0.2-1_amd64.deb
+# a GPU worker
+sudo apt install ./flamejob-agent_1.0.2-1_amd64.deb
+```
+
+Installing `flamejob-server` sets up a complete server: it creates the `flamejob` system user, generates `jwt.key` and `plain.key`, writes a default **local-mode** `/etc/flamejob/flamejob.toml` (only if one isn't already present, so upgrades keep your edits), installs the systemd unit, and **enables** the service. It does not *start* it — the database must be reachable first (see First boot). Edit the config for an external database or the remote runner before starting. `apt purge flamejob-server` removes the generated config and keys. The other three packages simply place their binary on `PATH`.
 
 **Docker Compose (quickest, for evaluation).** `deploy/docker-compose.yml` brings up PostgreSQL 16 and builds and runs `flamejobd`:
 
@@ -55,26 +68,19 @@ docker compose -f deploy/docker-compose.yml up --build
 
 It wires the database and server together through `FJ_`-prefixed environment variables and publishes the API on `:8443`. The compose file sets `FJ_AUTH__JWT_SECRET` to a placeholder — change it before any real use.
 
-**Native install + systemd (for a persistent deployment).** Run the interactive installer:
+**Native install from source + systemd.** From a source checkout, the interactive installer does the whole job — binaries, config, and service:
 
 ```
 sudo deploy/install.sh
 ```
 
-It checks for `hashcat` and `nvidia-smi`, asks whether PostgreSQL is `local` or `external` (taking a DSN for external), records the directory type (reserved for the LDAP/AD roadmap — local auth is used until then), generates `jwt.key` and `plain.key` under `/etc/flamejob`, and writes `/etc/flamejob/flamejob.toml`. Then install the service unit and start it:
-
-```
-sudo cp deploy/flamejob-server.service /etc/systemd/system/
-sudo systemctl enable --now flamejob-server
-```
-
-The unit runs `flamejobd` as the `flamejob` user with `FLAMEJOB_CONFIG=/etc/flamejob/flamejob.toml`, and restarts on failure.
+It checks for `hashcat`/`nvidia-smi`; creates the `flamejob` user; builds the binaries if they aren't already installed (this needs the Rust toolchain) and installs them to `/usr/bin`; asks whether PostgreSQL is `local` or `external`; **requires PostgreSQL 16** — it verifies an external DSN's server version or a local PG 16 install and stops with guidance if it can't confirm one (override with `FLAMEJOB_SKIP_PG_CHECK=1`); records the directory type (reserved for the LDAP/AD roadmap); generates the keys; writes `/etc/flamejob/flamejob.toml`; and installs and enables the systemd unit. Like the package, it enables but does not *start* the service. The unit runs `flamejobd` as the `flamejob` user with `FLAMEJOB_CONFIG=/etc/flamejob/flamejob.toml` and restarts on failure.
 
 **Container image.** The `Dockerfile` builds a release `flamejobd` and runs it on `:8443` — use it if you deploy your own orchestration against an external database.
 
-**First boot.** `flamejobd` runs its database migrations on startup, then serves. Confirm it is up with `GET /healthz` (returns `ok`).
+**First boot.** Once the database is reachable, start the service: `sudo systemctl start flamejob-server`. `flamejobd` runs its migrations on startup, then serves. Confirm it is up with `GET /healthz` (returns `ok`).
 
-**Seeding the superadmin.** On the very first boot, when the `users` table is empty, flamejob seeds a break-glass local account named `superadmin`. Set its password by exporting `FJ_BOOTSTRAP_PASSWORD` before that first start; if you don't, a random password is generated and written to the server log (at warn level) exactly once. Capture it, log in, and create real accounts (§6).
+**Seeding the superadmin.** On the very first boot, when the `users` table is empty, flamejob seeds a break-glass local account named `superadmin`. To set its password, export `FJ_BOOTSTRAP_PASSWORD` before that first start — for the systemd service, add it to the unit's environment (or run `flamejobd` by hand once). Otherwise a random password is generated and written to the log at warn level exactly once; capture it with `journalctl -u flamejob-server`, log in, and create real accounts (§6).
 
 ## 5. Configuration reference
 
@@ -99,7 +105,7 @@ flamejob reads configuration from three layers, in increasing precedence: built-
 | `[telemetry]` | `sample_interval_secs` | `5` | Seconds between samples. |
 | `[telemetry]` | `history_limit` | `500` | Max rows returned by the device-history endpoint. |
 
-**Watch for these.** The shipped `deploy/flamejob.toml.example` and `install.sh` don't write every section — notably `[scheduler].runner` and the entire `[telemetry]` block are absent. That is harmless, because the defaults above fill them in, but it means distributed mode and telemetry tuning are enabled by adding those keys yourself (or via `FJ_` env vars). Always replace the default `jwt_secret`, and point `[crypto].plaintext_key_file` at a real key so cracked plaintext is encrypted at rest (§9).
+**Watch for these.** The shipped `deploy/flamejob.toml.example` and `install.sh` don't write every section — notably `[scheduler].runner` and the entire `[telemetry]` block are absent. That is harmless, because the defaults above fill them in, but it means distributed mode and telemetry tuning are enabled by adding those keys yourself (or via `FJ_` env vars). The `flamejob-server` package is the exception: its postinst writes a default config that already sets `[scheduler].runner = "local"` and points `[crypto].plaintext_key_file` at the generated key. Always replace the default `jwt_secret`, and point `[crypto].plaintext_key_file` at a real key so cracked plaintext is encrypted at rest (§9).
 
 ## 6. Identity, roles & access control
 
@@ -122,7 +128,7 @@ In practice: **admins manage people and agents but cannot run jobs or read crack
 
 **Creating users.** `POST /admin/users` (requires `ManageUsers`) takes a username, a password and a list of roles and creates a local account. The `fj` CLI handles login and identity (`fj login`, `fj whoami`) but does not wrap user creation — call the endpoint directly (for example with `curl` and an admin token) or from your own tooling.
 
-**The break-glass superadmin.** The `superadmin` seeded on first boot (§4) is a local account for bootstrapping and emergencies. Once it exists, log in as it and create named admin and operator accounts rather than sharing it. Version 1.0.0 ships account *creation* but not a password-change or disable endpoint, so rotating the superadmin password — or disabling any account — is a database operation today (the `users` table carries a `disabled` flag that login honours). Treat that as the current rotation path until later releases add self-service.
+**The break-glass superadmin.** The `superadmin` seeded on first boot (§4) is a local account for bootstrapping and emergencies. Once it exists, log in as it and create named admin and operator accounts rather than sharing it. Version 1.0.2 ships account *creation* but not a password-change or disable endpoint, so rotating the superadmin password — or disabling any account — is a database operation today (the `users` table carries a `disabled` flag that login honours). Treat that as the current rotation path until later releases add self-service.
 
 **Directory integration (roadmap).** The `ManageDirectory` capability and the installer's directory prompt are placeholders for planned LDAP/AD-mapped RBAC (Phase 5). Until then, all roles come from the local `user_roles` table.
 
@@ -159,7 +165,7 @@ Log verbosity is set with `FJ_LOG`. Note the agent's default `--server` port (`8
 
 **Monitoring the fleet.** `GET /agents` (requires `ViewStats`) lists enrolled workers with status and timestamps. Status moves through `enrolled` (certificate issued, never connected), `online` (connected now), `offline` (disconnected), and `revoked` (certificate refused at connect).
 
-**Transport security.** The issued certificates are intended for mutual TLS, but in 1.0.0 the agent WebSocket authenticates at the *application* layer — by certificate fingerprint — and does not itself terminate transport TLS. For anything beyond a trusted network, terminate TLS in front of `flamejobd` with a rustls acceptor or a reverse proxy.
+**Transport security.** The issued certificates are intended for mutual TLS, but in 1.0.2 the agent WebSocket authenticates at the *application* layer — by certificate fingerprint — and does not itself terminate transport TLS. For anything beyond a trusted network, terminate TLS in front of `flamejobd` with a rustls acceptor or a reverse proxy.
 
 **Resilience and limits.** If an agent disconnects mid-task, the control plane fails its in-flight chunks so the scheduler can retry them. Two limits to plan around in this release: the scheduler runs **one job and one chunk at a time** (it does not yet fan a single job across many agents in parallel), and **wordlist/rule files are not shipped to agents** — mask attacks are self-contained over the wire, but a wordlist attack assumes the wordlist already exists on the agent.
 
@@ -250,7 +256,7 @@ When agents are connected (§7) they push their own device telemetry up the WebS
 
 **Health and readiness.** `GET /healthz` returns `ok` when the process is serving. `GET /metrics`, `GET /agents` and `GET /devices` are useful deeper liveness probes once the system is in use.
 
-**Scaling and current limits.** Version 1.0.0 is a single control plane with a single scheduler that processes one job and one chunk at a time; it does not yet parallelise one job across many agents. Uploaded wordlists, rules and masks live on the control plane's `data_dir` and are not distributed to agents (§7). Plan capacity with those constraints in mind.
+**Scaling and current limits.** Version 1.0.2 is a single control plane with a single scheduler that processes one job and one chunk at a time; it does not yet parallelise one job across many agents. Uploaded wordlists, rules and masks live on the control plane's `data_dir` and are not distributed to agents (§7). Plan capacity with those constraints in mind.
 
 ## 11. Troubleshooting
 
@@ -305,4 +311,4 @@ When agents are connected (§7) they push their own device telemetry up the WebS
 
 **Config environment map.** Any key maps to `FJ_<SECTION>__<KEY>` (uppercase, `__` between levels): e.g. `FJ_SERVER__BIND`, `FJ_DATABASE__DSN`, `FJ_AUTH__JWT_SECRET`, `FJ_SCHEDULER__RUNNER`, `FJ_TELEMETRY__ENABLED`. See §5.
 
-**Further reading.** The architecture decision record and build spec live in the project workspace. Roadmap items not in 1.0.0: the web UI, and LDAP/AD-mapped RBAC (Phase 4/5).
+**Further reading.** The architecture decision record and build spec live in the project workspace. Roadmap items not in 1.0.2: the web UI, and LDAP/AD-mapped RBAC (Phase 4/5).
