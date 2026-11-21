@@ -71,6 +71,9 @@ enum JobCmd {
         /// wordlist file, which is uploaded for you.
         #[arg(long)]
         wordlist: Option<String>,
+        /// Mask string for a mask attack (`-a 3`), e.g. '?a?a?a?a?a?a'.
+        #[arg(long)]
+        mask: Option<String>,
         #[arg(long, default_value_t = 100)]
         priority: i32,
     },
@@ -196,6 +199,7 @@ async fn main() -> Result<()> {
                 attack_mode,
                 name,
                 wordlist,
+                mask,
                 priority,
             } => {
                 // Accept either an existing file id (UUID) or a local path,
@@ -226,7 +230,7 @@ async fn main() -> Result<()> {
                     config: JobConfig {
                         wordlist_file_id,
                         rule_file_ids: vec![],
-                        mask: None,
+                        mask,
                         extra_args: vec![],
                     },
                 };

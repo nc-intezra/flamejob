@@ -48,10 +48,10 @@ pub struct AgentInfo {
 
 // ---- WebSocket task protocol ----
 
-/// A chunk of work dispatched to an agent. Self-contained for mask attacks:
-/// the hash lines travel inline so the agent needs no server filesystem access.
-/// Wordlist/rule attacks pass file paths the agent is expected to have locally
-/// (bulk wordlist sync is a later phase).
+/// A chunk of work dispatched to an agent. The hash lines travel inline, and a
+/// mask (for mask attacks) travels inline too. Wordlist and rule files are
+/// referenced by id: the agent fetches them from the control plane over
+/// `GET /agent/files/{id}` and caches them locally.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentTask {
     pub task_id: Uuid,
@@ -59,9 +59,12 @@ pub struct AgentTask {
     pub attack_mode: i16,
     /// Raw `hash` or `hash:salt` lines.
     pub hashes: Vec<String>,
-    /// Mask string (attack mode 3) or wordlist path.
-    pub primary: String,
-    pub rules: Vec<String>,
+    /// Mask string for mask attacks (inline).
+    pub mask: Option<String>,
+    /// Wordlist file id the agent downloads from the control plane.
+    pub wordlist: Option<Uuid>,
+    /// Rule file ids the agent downloads from the control plane.
+    pub rules: Vec<Uuid>,
     pub keyspace_offset: i64,
     pub keyspace_len: i64,
     pub extra_args: Vec<String>,

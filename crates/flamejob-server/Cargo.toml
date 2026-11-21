@@ -58,4 +58,5 @@ hex = "0.4"
 rcgen = { workspace = true }
 pem = "3"
 futures-util = { workspace = true }
+tokio-util = { version = "0.7", features = ["io"] }
 async-trait = { workspace = true }

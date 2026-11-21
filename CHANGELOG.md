@@ -6,7 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [1.0.3] - 2026-11-21
 
-Fixes for uploading and submitting wordlist jobs.
+Makes wordlist jobs work end to end, including in distributed mode.
+
+### Added
+- **Wordlist/rule distribution to agents.** In remote (distributed) mode the
+  agent now fetches the wordlist and rule files a task needs from the control
+  plane (`GET /agent/files/{id}`, authenticated by the agent's client
+  certificate) and caches them under its data dir, then runs hashcat against the
+  local copies. Wordlist attacks no longer require pre-staging files on each
+  agent.
+- `fj job submit --mask <mask>` submits a mask attack (`-a 3`). Masks travel
+  inline to agents, so they need no file distribution.
 
 ### Fixed
 - Uploading a real wordlist no longer fails with a broken pipe: the `/files`
