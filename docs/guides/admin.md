@@ -163,6 +163,56 @@ Log verbosity is set with `FJ_LOG`. Note the agent's default `--server` port (`8
 
 **Resilience and limits.** If an agent disconnects mid-task, the control plane fails its in-flight chunks so the scheduler can retry them. Two limits to plan around in this release: the scheduler runs **one job and one chunk at a time** (it does not yet fan a single job across many agents in parallel), and **wordlist/rule files are not shipped to agents** — mask attacks are self-contained over the wire, but a wordlist attack assumes the wordlist already exists on the agent.
 
+### Distributed quick start
+
+A complete control plane + agent + dashboard bring-up, tying together the pieces above.
+
+**1. Control plane (remote mode).** With Postgres 16 and hashcat in place, start `flamejobd` with the remote runner and a seeded superadmin:
+
+```
+export FJ_DATABASE__DSN='postgres://flamejob@localhost/flamejob'
+export FJ_AUTH__JWT_SECRET='<a real secret>'
+export FJ_SCHEDULER__RUNNER=remote
+export FJ_BOOTSTRAP_PASSWORD='<superadmin password>'
+flamejobd        # migrations run, superadmin seeded, listening on :8443
+```
+
+Check that `curl -s http://localhost:8443/healthz` returns `ok`.
+
+**2. Log in and mint a one-time claim token** (needs `ManageAgents`; the superadmin has it). Claim minting isn't an `fj` subcommand, so use the cached token:
+
+```
+export FJ_SERVER=http://control-plane:8443
+fj login --user superadmin --password '<superadmin password>'
+TOKEN=$(cat ~/.config/flamejob/token)
+curl -s -X POST http://control-plane:8443/admin/agent-claims \
+     -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+     -d '{"name":"gpu-box-1"}'          # -> { "claim_token": "<token>", ... }
+```
+
+**3. Start the agent (GPU box).** First run enrolls with the claim token (the CA signs its cert, stored under `--data-dir/pki`), then opens the WebSocket. Override `--server` — the agent defaults to port 8099:
+
+```
+fj-agent --server http://control-plane:8443 --name gpu-box-1 \
+         --claim-token <token> --hashcat /usr/bin/hashcat
+```
+
+The token is single-use; later restarts reconnect with the stored cert (drop `--claim-token`). Verify with `GET /agents` (status `online`) or `GET /devices`.
+
+**4. Submit work.**
+
+```
+fj hashlist create --name demo -m 1000        # -> <hashlist-id>
+fj hashlist import <hashlist-id> hashes.txt
+fj job submit --hashlist <hashlist-id> --name demo-run --attack-mode 0 --wordlist <file-id>
+```
+
+The scheduler chunks the keyspace and dispatches chunks to the agent. Remember that a wordlist attack needs the wordlist present on the agent host; mask attacks (`-a 3`) are self-contained.
+
+**5. Watch it.** Run `FJ_SERVER=http://control-plane:8443 flamejob-tui` — the job shows its per-chunk progress and ETA, and the agent's GPUs appear in the devices panel.
+
+This example uses plain `http://`; for anything off a trusted network, front `flamejobd` with TLS and point agents and clients at the `https://` address (see *Transport security* above).
+
 ## 8. Telemetry, metrics & monitoring
 
 `flamejobd` runs a local telemetry collector that samples device and host metrics on an interval, persists them, and exports them for scraping. It reads NVIDIA GPUs via NVML — temperature, utilisation, memory, P-state, power, fan, and core and memory clocks — and host CPU/RAM via `sysinfo`. With no NVIDIA/NVML present it degrades gracefully to host CPU/RAM only.

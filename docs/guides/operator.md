@@ -148,14 +148,14 @@ Global flags, usable on any command: `--server <url>` (or `FJ_SERVER`), and `--j
 | `fj job ls` | List jobs with state and priority. |
 | `fj job show <id>` | Full job detail (JSON). |
 | `fj job submit --hashlist <id> --name <n> [-a <mode>] [--wordlist <id>] [--priority <n>]` | Submit a job. |
-| `fj job pause\|resume\|cancel <id>` | Change job run state. |
+| `fj job {pause,resume,cancel} <id>` | Change job run state. |
 | `fj job prio <id> <priority>` | Re-prioritise a job. |
 | `fj job watch <id>` | Follow job / task events (SSE). |
 | `fj hashlist ls` | List hashlists with cracked / total. |
 | `fj hashlist create --name <n> -m <type>` | Create a hashlist. |
 | `fj hashlist import <id> <file>` | Import hashes from a file. |
 | `fj hashlist cracked <id>` | Show recovered plaintext (needs `ViewPlaintext`). |
-| `fj file add <path> [--kind wordlist\|rule\|mask\|other]` | Upload a file. |
+| `fj file add <path> [--kind {wordlist,rule,mask,other}]` | Upload a file. |
 | `fj file ls` | List files. |
 | `fj file rm <id>` | Delete a file. |
 
@@ -179,7 +179,7 @@ Global flags, usable on any command: `--server <url>` (or `FJ_SERVER`), and `--j
 | --- | --- |
 | `POST /auth/login`, `GET /auth/me` | none / any |
 | `GET /jobs`, `GET /jobs/{id}`, `GET /jobs/{id}/tasks` | `ViewJobs` |
-| `POST /jobs`, `PATCH /jobs/{id}`, `POST /jobs/{id}/pause\|resume\|cancel` | `SubmitJobs` |
+| `POST /jobs`, `PATCH /jobs/{id}`, `POST /jobs/{id}/{pause,resume,cancel}` | `SubmitJobs` |
 | `GET /hashlists` | `ViewJobs` |
 | `POST /hashlists`, `POST /hashlists/{id}/hashes` | `Ingest` |
 | `GET /hashlists/{id}/cracked` | `ViewPlaintext` |
