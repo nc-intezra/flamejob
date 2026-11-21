@@ -241,7 +241,7 @@ async fn ensure_file(server: &str, cert_pem: &str, data_dir: &Path, id: Uuid) ->
     let url = format!("{}/agent/files/{}", server.trim_end_matches('/'), id);
     let resp = reqwest::Client::new()
         .get(&url)
-        .header("x-agent-cert", cert_pem)
+        .header("x-agent-cert", hex::encode(cert_pem.as_bytes()))
         .send()
         .await
         .context("download file")?

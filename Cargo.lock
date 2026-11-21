@@ -825,6 +825,7 @@ dependencies = [
  "flamejob-core",
  "flamejob-runner",
  "futures-util",
+ "hex",
  "rcgen",
  "reqwest",
  "serde",

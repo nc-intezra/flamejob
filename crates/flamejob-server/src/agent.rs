@@ -396,11 +396,17 @@ pub async fn download_file(
     headers: HeaderMap,
     UrlPath(id): UrlPath<Uuid>,
 ) -> Result<Response, AppError> {
-    let cert = headers
+    // The cert PEM is hex-encoded in the header (PEM newlines aren't valid in a
+    // header value).
+    let cert_hex = headers
         .get("x-agent-cert")
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| AppError::Unauthorized("missing agent certificate".into()))?;
-    let fingerprint = pki::fingerprint_of_pem(cert)
+    let cert_pem = hex::decode(cert_hex)
+        .ok()
+        .and_then(|b| String::from_utf8(b).ok())
+        .ok_or_else(|| AppError::Unauthorized("bad certificate encoding".into()))?;
+    let fingerprint = pki::fingerprint_of_pem(&cert_pem)
         .map_err(|_| AppError::Unauthorized("bad certificate".into()))?;
     let enrolled: Option<Uuid> =
         sqlx::query_scalar("SELECT id FROM agents WHERE fingerprint = $1 AND status <> 'revoked'")
