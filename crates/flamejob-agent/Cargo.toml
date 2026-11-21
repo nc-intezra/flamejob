@@ -13,8 +13,16 @@ path = "src/main.rs"
 maintainer = "nc-intezra <nc-intezra@users.noreply.github.com>"
 section = "net"
 priority = "optional"
+# Built on Ubuntu 22.04 (glibc 2.35); libc6 and friends are auto-computed ($auto).
+# The agent generates its keypair with pure-Rust crypto, so no openssl is needed.
+depends = "$auto"
+# postinst creates the flamejob-agent user, the data dir (owned by it), and a
+# default env file, and enables the service; prerm/postrm stop/disable it and
+# purge the env file on `apt purge`.
+maintainer-scripts = "debian/"
 assets = [
     ["target/release/fj-agent", "usr/bin/", "755"],
+    ["../../deploy/flamejob-agent.service", "lib/systemd/system/flamejob-agent.service", "644"],
 ]
 
 [dependencies]

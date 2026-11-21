@@ -4,6 +4,32 @@ All notable changes to flamejob are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.4] - 2026-11-21
+
+Makes a plain `flamejob-agent` install produce a working worker (mirroring the
+server packaging fix from 1.0.2), and exposes rule files on the CLI.
+
+### Added
+- **`fj job submit --rule <id|path>`** applies a rule file to a dictionary
+  attack. Repeat the flag to apply several rule files in order; each value is an
+  already-uploaded file id (UUID) or a path to a local rule file, which is
+  uploaded for you (as kind `rule`). Rules are distributed to remote agents the
+  same way wordlists are (see 1.0.3). Brute-force attacks are the mask attack
+  (`-a 3`), already exposed as `--mask` since 1.0.3.
+
+### Fixed
+- **Agent `.deb` now sets up the worker, not just the binary.** It creates a
+  `flamejob-agent` system user, creates `/var/lib/flamejob-agent` (with the
+  `pki`, `jobs` and `cache` subdirs) owned by that user, writes a default
+  `/etc/flamejob-agent/agent.env`, and installs and enables a systemd unit that
+  runs the agent as the `flamejob-agent` user. Previously the data dir's
+  ownership was left to chance, so an agent enrolled as root but run as another
+  user hit `Permission denied` writing its hash/cache files (surfacing as
+  `write hash file: Permission denied` and `keyspace file fetch failed`).
+- **The agent fails fast with a clear message** when its data dir isn't writable,
+  creating `pki`/`jobs`/`cache` up front and probing writability at startup
+  instead of swallowing the error and failing later mid-job.
+
 ## [1.0.3] - 2026-11-21
 
 Makes wordlist jobs work end to end, including in distributed mode.

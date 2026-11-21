@@ -4,7 +4,7 @@
 
 This guide is for **operators** — the people who load hashes, submit cracking jobs, and watch them run. As an operator you can do everything involved in getting work through flamejob: create hashlists and import hashes, upload wordlists / rules / masks, submit and control jobs, read recovered plaintext, and watch job and device stats. You cannot manage user accounts or the worker fleet — those are admin tasks (see the **Administrator Guide**), and strictly read-only users have their own **Viewer Guide**.
 
-You'll work through the `fj` command-line client and the `flamejob-tui` dashboard, both talking to a `flamejobd` control plane an admin has already deployed. This guide documents flamejob **1.0.3**.
+You'll work through the `fj` command-line client and the `flamejob-tui` dashboard, both talking to a `flamejobd` control plane an admin has already deployed. This guide documents flamejob **1.0.4**.
 
 ## 2. Concepts primer
 
@@ -96,10 +96,11 @@ fj job submit --hashlist <hashlist-id> --name corp-mask-1 \
 
 - `--attack-mode` / `-a` is hashcat's attack number (`0` wordlist, `3` mask; default `0`).
 - `--wordlist` takes **either** a file id (from `fj file add`) **or** a path to a local wordlist, which `fj` uploads for you before submitting. A value that's neither a known id nor an existing file is rejected. Omit it for attacks that don't need a wordlist.
-- `--mask` takes a hashcat mask string (e.g. `?a?a?a?a`) for a mask attack; pair it with `-a 3`.
+- `--mask` takes a hashcat mask string (e.g. `?a?a?a?a`) for a mask / brute-force attack; pair it with `-a 3`.
+- `--rule` applies a rule file to a dictionary attack (`-a 0`): a file id (from `fj file add`) **or** a local path, uploaded for you as kind `rule`. Repeat `--rule` to apply several rule files in order, e.g. `--wordlist rockyou.txt --rule best64.rule`.
 - `--priority` orders the queue — lower runs first; default `100`.
 
-The command prints the new job id and the job enters the queue. (Rule files and extra hashcat arguments exist in the API's job config but aren't exposed as `fj` flags in 1.0.3 — wordlist and mask attacks are the supported CLI paths.)
+The command prints the new job id and the job enters the queue. (Wordlist, rule and mask/brute-force attacks are all driven from the CLI; only raw extra hashcat arguments remain unexposed as `fj` flags — they live in the API's job config if you need them.)
 
 **Control a running job:**
 
@@ -162,7 +163,7 @@ This is the complete `fj` surface for an operator. **Global flags**, valid on ev
 | --- | --- |
 | `fj job ls` | List jobs with id, name, state and priority. |
 | `fj job show <id>` | Full job detail (always JSON). |
-| `fj job submit --hashlist <id> --name <n> [-a <mode>] [--wordlist <id\|path>] [--mask <str>] [--priority <n>]` | Submit a job (see §6 for the flags). `--hashlist` and `--name` are required; `-a` defaults to `0`, `--priority` to `100`. |
+| `fj job submit --hashlist <id> --name <n> [-a <mode>] [--wordlist <id\|path>] [--rule <id\|path>]… [--mask <str>] [--priority <n>]` | Submit a job (see §6 for the flags). `--hashlist` and `--name` are required; `-a` defaults to `0`, `--priority` to `100`; `--rule` repeats. |
 | `fj job pause <id>` | Pause a running job (resumable). |
 | `fj job resume <id>` | Return a paused job to the queue. |
 | `fj job cancel <id>` | Cancel a job (terminal). |
@@ -198,7 +199,7 @@ The `flamejob-tui` dashboard keys are in §8. Admin-only tools (`flamejobd`, `fj
 
 ## 12. Reference & appendices
 
-**Attack modes** (hashcat `-a`, passed as `--attack-mode`): `0` dictionary (wordlist), `1` combinator, `3` mask (brute-force), `6` hybrid wordlist + mask, `7` hybrid mask + wordlist. The `fj` submit flow supports wordlist (`0`, via `--wordlist`) and mask (`3`, via `--mask`) attacks; hybrid modes aren't wired up in 1.0.3.
+**Attack modes** (hashcat `-a`, passed as `--attack-mode`): `0` dictionary (wordlist), `1` combinator, `3` mask (brute-force), `6` hybrid wordlist + mask, `7` hybrid mask + wordlist. The `fj` submit flow supports wordlist (`0`, via `--wordlist`, with optional `--rule` rule files) and mask / brute-force (`3`, via `--mask`) attacks; hybrid modes aren't wired up in 1.0.4.
 
 **Job states.** `queued` → `assigned` → `running`; `paused` is resumable; terminal states are `completed`, `exhausted`, `cancelled`, `error`. A job finishes early once every hash is cracked. Task (chunk) states: `pending`, `running`, `paused`, `done`, `failed`.
 

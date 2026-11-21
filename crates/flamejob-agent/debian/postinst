@@ -1,0 +1,57 @@
+#!/bin/sh
+# flamejob-agent postinst: system user, data dir, env file, and service enablement.
+set -e
+
+CONF_DIR=/etc/flamejob-agent
+DATA_DIR=/var/lib/flamejob-agent
+
+case "$1" in
+  configure)
+    # 1. System user the agent runs as.
+    if ! getent passwd flamejob-agent >/dev/null 2>&1; then
+      useradd --system --user-group \
+        --home-dir "$DATA_DIR" --shell /usr/sbin/nologin flamejob-agent || true
+    fi
+
+    # 2. Data dir plus the subdirs the agent writes into (pki, jobs, cache).
+    mkdir -p "$DATA_DIR/pki" "$DATA_DIR/jobs" "$DATA_DIR/cache" "$CONF_DIR"
+
+    # 3. Env file — written only if absent, so upgrades and local edits are kept.
+    #    The admin points it at the control plane and sets a one-time claim token
+    #    for the first start.
+    if [ ! -f "$CONF_DIR/agent.env" ]; then
+      cat > "$CONF_DIR/agent.env" <<'ENV'
+# flamejob-agent configuration (systemd EnvironmentFile).
+# Point at your control plane and set a one-time claim token for the first start.
+FJ_AGENT_SERVER=http://CONTROL-PLANE-HOST:8443
+FJ_AGENT_NAME=agent-1
+# Obtain from the control plane: POST /admin/agent-claims (needs ManageAgents).
+# Needed only for the first start; after enrollment the cert persists under
+# /var/lib/flamejob-agent/pki and you can clear this line.
+#FJ_AGENT_CLAIM_TOKEN=
+# hashcat binary on this worker.
+FJ_AGENT_HASHCAT=/usr/bin/hashcat
+# hashcat workload profile (1-4).
+FJ_AGENT_WORKLOAD=3
+ENV
+    fi
+
+    # 4. Ownership and permissions.
+    chown -R flamejob-agent:flamejob-agent "$DATA_DIR" "$CONF_DIR" || true
+    chmod 640 "$CONF_DIR/agent.env" 2>/dev/null || true
+
+    # 5. Service: reload + enable, but do not start — the control plane URL and a
+    #    claim token must be set in the env file first (see the message below).
+    if [ -d /run/systemd/system ]; then
+      systemctl daemon-reload >/dev/null 2>&1 || true
+      systemctl enable flamejob-agent.service >/dev/null 2>&1 || true
+    fi
+
+    echo "flamejob-agent installed. Edit $CONF_DIR/agent.env (server URL + claim token),"
+    echo "ensure hashcat is installed on this host, then: systemctl start flamejob-agent"
+    ;;
+  abort-upgrade|abort-remove|abort-deconfigure)
+    ;;
+esac
+
+exit 0

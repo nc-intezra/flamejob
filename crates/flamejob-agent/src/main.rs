@@ -51,10 +51,9 @@ async fn main() -> Result<()> {
         )
         .init();
     let args = Args::parse();
-    std::fs::create_dir_all(&args.data_dir).ok();
+    ensure_data_dir(&args.data_dir)?;
 
     let pki_dir = args.data_dir.join("pki");
-    std::fs::create_dir_all(&pki_dir).ok();
     let cert_path = pki_dir.join("agent.pem");
     let key_path = pki_dir.join("agent.key.pem");
 
@@ -64,6 +63,38 @@ async fn main() -> Result<()> {
     let cert_pem = std::fs::read_to_string(&cert_path).context("read agent cert")?;
 
     run(&args, cert_pem).await
+}
+
+/// Create the agent's data dir and the subdirs it writes into (`pki`, `jobs`,
+/// `cache`), then prove the dir is writable. Fails early with a clear, actionable
+/// message rather than letting a permission error surface later as a confusing
+/// "write hash file" / "create cache file" during a job.
+fn ensure_data_dir(dir: &Path) -> Result<()> {
+    for sub in ["pki", "jobs", "cache"] {
+        let p = dir.join(sub);
+        std::fs::create_dir_all(&p).with_context(|| {
+            format!(
+                "cannot create {} — the data dir is not writable by this user. \
+                 Set --data-dir (FJ_AGENT_DATA_DIR) to a writable path, or chown it \
+                 to the user running fj-agent, e.g. `sudo chown -R $(id -un) {}`",
+                p.display(),
+                dir.display()
+            )
+        })?;
+    }
+    // Writability probe: create_dir_all succeeds when a dir already exists even
+    // if it isn't writable, so confirm we can actually write a file.
+    let probe = dir.join(".fj-agent-write-probe");
+    std::fs::write(&probe, b"ok").with_context(|| {
+        format!(
+            "{} exists but is not writable by this user. chown it to the user \
+             running fj-agent, e.g. `sudo chown -R $(id -un) {}`",
+            dir.display(),
+            dir.display()
+        )
+    })?;
+    let _ = std::fs::remove_file(&probe);
+    Ok(())
 }
 
 /// Generate a keypair + CSR, POST /agent/enroll, and persist the issued cert.
