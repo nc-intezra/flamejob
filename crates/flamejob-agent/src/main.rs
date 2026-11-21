@@ -138,7 +138,7 @@ async fn run(args: &Args, cert_pem: String) -> Result<()> {
     out_tx
         .send(AgentMsg::Hello {
             name: args.name.clone(),
-            cert_pem,
+            cert_pem: cert_pem.clone(),
         })
         .await?;
 
@@ -174,8 +174,10 @@ async fn run(args: &Args, cert_pem: String) -> Result<()> {
                 let runner = runner.clone();
                 let out_tx = out_tx.clone();
                 let data_dir = args.data_dir.clone();
+                let server = args.server.clone();
+                let cert = cert_pem.clone();
                 tokio::spawn(async move {
-                    let value = compute_keyspace(&runner, &task, &data_dir).await;
+                    let value = compute_keyspace(&runner, &server, &cert, &task, &data_dir).await;
                     out_tx.send(AgentMsg::Keyspace { req_id, value }).await.ok();
                 });
             }
@@ -184,8 +186,10 @@ async fn run(args: &Args, cert_pem: String) -> Result<()> {
                 let out_tx = out_tx.clone();
                 let data_dir = args.data_dir.clone();
                 let current = current.clone();
+                let server = args.server.clone();
+                let cert = cert_pem.clone();
                 tokio::spawn(async move {
-                    run_task(runner, task, out_tx, data_dir, current).await;
+                    run_task(runner, server, cert, task, out_tx, data_dir, current).await;
                 });
             }
             ServerMsg::Cancel { task_id } => {
@@ -205,13 +209,94 @@ async fn run(args: &Args, cert_pem: String) -> Result<()> {
     Ok(())
 }
 
-async fn compute_keyspace(runner: &LocalRunner, task: &AgentTask, data_dir: &Path) -> u64 {
-    let rt = runner_task(task, data_dir, &Vec::new());
+async fn compute_keyspace(
+    runner: &LocalRunner,
+    server: &str,
+    cert_pem: &str,
+    task: &AgentTask,
+    data_dir: &Path,
+) -> u64 {
+    let (primary, rules) = match resolve_task(server, cert_pem, data_dir, task).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "keyspace file fetch failed");
+            return 0;
+        }
+    };
+    let rt = runner_task(task, data_dir, primary, rules);
     runner.keyspace(&rt).await.unwrap_or(0)
+}
+
+/// Ensure a wordlist/rule file is present locally, downloading it from the
+/// control plane (`GET /agent/files/{id}`) into `{data_dir}/cache/{id}` if not
+/// already cached. Returns the local path.
+async fn ensure_file(server: &str, cert_pem: &str, data_dir: &Path, id: Uuid) -> Result<PathBuf> {
+    use tokio::io::AsyncWriteExt;
+    let cache = data_dir.join("cache");
+    tokio::fs::create_dir_all(&cache).await.ok();
+    let dest = cache.join(id.to_string());
+    if tokio::fs::try_exists(&dest).await.unwrap_or(false) {
+        return Ok(dest);
+    }
+    let url = format!("{}/agent/files/{}", server.trim_end_matches('/'), id);
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .header("x-agent-cert", hex::encode(cert_pem.as_bytes()))
+        .send()
+        .await
+        .context("download file")?
+        .error_for_status()
+        .context("download file status")?;
+    let tmp = cache.join(format!("{id}.part"));
+    let mut out = tokio::fs::File::create(&tmp)
+        .await
+        .context("create cache file")?;
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("read download chunk")?;
+        out.write_all(&chunk).await.context("write cache file")?;
+    }
+    out.flush().await.ok();
+    tokio::fs::rename(&tmp, &dest)
+        .await
+        .context("finalize cache file")?;
+    Ok(dest)
+}
+
+/// Resolve a task's primary input (mask inline, or a fetched wordlist path) and
+/// its rule file paths, downloading any referenced files.
+async fn resolve_task(
+    server: &str,
+    cert_pem: &str,
+    data_dir: &Path,
+    task: &AgentTask,
+) -> Result<(String, Vec<String>)> {
+    let primary = if let Some(mask) = &task.mask {
+        mask.clone()
+    } else if let Some(wid) = task.wordlist {
+        ensure_file(server, cert_pem, data_dir, wid)
+            .await?
+            .display()
+            .to_string()
+    } else {
+        anyhow::bail!("task has neither wordlist nor mask");
+    };
+    let mut rules = Vec::new();
+    for rid in &task.rules {
+        rules.push(
+            ensure_file(server, cert_pem, data_dir, *rid)
+                .await?
+                .display()
+                .to_string(),
+        );
+    }
+    Ok((primary, rules))
 }
 
 async fn run_task(
     runner: Arc<LocalRunner>,
+    server: String,
+    cert_pem: String,
     task: AgentTask,
     out_tx: mpsc::Sender<AgentMsg>,
     data_dir: PathBuf,
@@ -234,7 +319,20 @@ async fn run_task(
         return;
     }
 
-    let rt = runner_task(&task, &data_dir, &task.hashes);
+    let (primary, rules) = match resolve_task(&server, &cert_pem, &data_dir, &task).await {
+        Ok(v) => v,
+        Err(e) => {
+            out_tx
+                .send(AgentMsg::Error {
+                    task_id: Some(task_id),
+                    message: format!("fetch files: {e}"),
+                })
+                .await
+                .ok();
+            return;
+        }
+    };
+    let rt = runner_task(&task, &data_dir, primary, rules);
     let (tx, mut rx) = mpsc::channel(64);
     let handle = match runner.start(&rt, tx).await {
         Ok(h) => h,
@@ -300,7 +398,12 @@ async fn run_task(
         .ok();
 }
 
-fn runner_task(task: &AgentTask, data_dir: &Path, _hashes: &[String]) -> RunnerTask {
+fn runner_task(
+    task: &AgentTask,
+    data_dir: &Path,
+    primary: String,
+    rules: Vec<String>,
+) -> RunnerTask {
     let hash_file = data_dir
         .join("jobs")
         .join(format!("{}.hashes", task.task_id));
@@ -309,8 +412,8 @@ fn runner_task(task: &AgentTask, data_dir: &Path, _hashes: &[String]) -> RunnerT
         hash_type: task.hash_type,
         attack_mode: task.attack_mode,
         hash_file: hash_file.display().to_string(),
-        primary: task.primary.clone(),
-        rules: task.rules.clone(),
+        primary,
+        rules,
         keyspace_offset: task.keyspace_offset,
         keyspace_len: task.keyspace_len,
         extra_args: task.extra_args.clone(),

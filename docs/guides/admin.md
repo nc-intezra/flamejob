@@ -6,7 +6,7 @@ flamejob is a distributed hashcat job queue. A single control-plane service, `fl
 
 This guide is for the people who stand that system up and keep it running: the **superadmin** (the local break-glass account) and **admin** roles, plus anyone responsible for deployment, configuration, user and agent management, and monitoring. Running and watching jobs day to day is covered separately in the **Operator Guide** and the **Viewer Guide**.
 
-It documents flamejob **1.0.2**. A web UI and directory-mapped (LDAP/AD) RBAC are on the roadmap but are not part of this release; where they come up, they are flagged as planned.
+It documents flamejob **1.0.3**. A web UI and directory-mapped (LDAP/AD) RBAC are on the roadmap but are not part of this release; where they come up, they are flagged as planned.
 
 ## 2. Concepts primer
 
@@ -51,11 +51,11 @@ There are four ways to run flamejob; the `.deb` packages are the recommended pat
 
 ```
 # control-plane host
-sudo apt install ./flamejob-server_1.0.2-1_amd64.deb \
-                 ./flamejob-cli_1.0.2-1_amd64.deb \
-                 ./flamejob-tui_1.0.2-1_amd64.deb
+sudo apt install ./flamejob-server_1.0.3-1_amd64.deb \
+                 ./flamejob-cli_1.0.3-1_amd64.deb \
+                 ./flamejob-tui_1.0.3-1_amd64.deb
 # a GPU worker
-sudo apt install ./flamejob-agent_1.0.2-1_amd64.deb
+sudo apt install ./flamejob-agent_1.0.3-1_amd64.deb
 ```
 
 Installing `flamejob-server` sets up a complete server: it creates the `flamejob` system user, generates `jwt.key` and `plain.key`, writes a default **local-mode** `/etc/flamejob/flamejob.toml` (only if one isn't already present, so upgrades keep your edits), installs the systemd unit, and **enables** the service. It does not *start* it — the database must be reachable first (see First boot). Edit the config for an external database or the remote runner before starting. `apt purge flamejob-server` removes the generated config and keys. The other three packages simply place their binary on `PATH`.
@@ -128,7 +128,7 @@ In practice: **admins manage people and agents but cannot run jobs or read crack
 
 **Creating users.** `POST /admin/users` (requires `ManageUsers`) takes a username, a password and a list of roles and creates a local account. The `fj` CLI handles login and identity (`fj login`, `fj whoami`) but does not wrap user creation — call the endpoint directly (for example with `curl` and an admin token) or from your own tooling.
 
-**The break-glass superadmin.** The `superadmin` seeded on first boot (§4) is a local account for bootstrapping and emergencies. Once it exists, log in as it and create named admin and operator accounts rather than sharing it. Version 1.0.2 ships account *creation* but not a password-change or disable endpoint, so rotating the superadmin password — or disabling any account — is a database operation today (the `users` table carries a `disabled` flag that login honours). Treat that as the current rotation path until later releases add self-service.
+**The break-glass superadmin.** The `superadmin` seeded on first boot (§4) is a local account for bootstrapping and emergencies. Once it exists, log in as it and create named admin and operator accounts rather than sharing it. Version 1.0.3 ships account *creation* but not a password-change or disable endpoint, so rotating the superadmin password — or disabling any account — is a database operation today (the `users` table carries a `disabled` flag that login honours). Treat that as the current rotation path until later releases add self-service.
 
 **Directory integration (roadmap).** The `ManageDirectory` capability and the installer's directory prompt are placeholders for planned LDAP/AD-mapped RBAC (Phase 5). Until then, all roles come from the local `user_roles` table.
 
@@ -165,9 +165,11 @@ Log verbosity is set with `FJ_LOG`. Note the agent's default `--server` port (`8
 
 **Monitoring the fleet.** `GET /agents` (requires `ViewStats`) lists enrolled workers with status and timestamps. Status moves through `enrolled` (certificate issued, never connected), `online` (connected now), `offline` (disconnected), and `revoked` (certificate refused at connect).
 
-**Transport security.** The issued certificates are intended for mutual TLS, but in 1.0.2 the agent WebSocket authenticates at the *application* layer — by certificate fingerprint — and does not itself terminate transport TLS. For anything beyond a trusted network, terminate TLS in front of `flamejobd` with a rustls acceptor or a reverse proxy.
+**Transport security.** The issued certificates are intended for mutual TLS, but in 1.0.3 the agent WebSocket (`/agent/stream`) and the agent file-download endpoint (`/agent/files/{id}`) both authenticate at the *application* layer — by certificate fingerprint — and do not themselves terminate transport TLS. For anything beyond a trusted network, terminate TLS in front of `flamejobd` with a rustls acceptor or a reverse proxy.
 
-**Resilience and limits.** If an agent disconnects mid-task, the control plane fails its in-flight chunks so the scheduler can retry them. Two limits to plan around in this release: the scheduler runs **one job and one chunk at a time** (it does not yet fan a single job across many agents in parallel), and **wordlist/rule files are not shipped to agents** — mask attacks are self-contained over the wire, but a wordlist attack assumes the wordlist already exists on the agent.
+**File distribution.** As of 1.0.3 the control plane distributes wordlist and rule files to agents automatically. When a chunk task references a wordlist or rule (by file id), the agent fetches it from the control plane over `GET /agent/files/{id}` — authenticated with the same client certificate it uses on the WebSocket — and caches it under `{data_dir}/cache/{id}`, re-using the cached copy on later tasks. Mask attacks carry the mask string inline and need no download. So a wordlist attack in remote mode no longer requires pre-staging files on each agent; the first agent to run a chunk pulls the file on demand.
+
+**Resilience and limits.** If an agent disconnects mid-task, the control plane fails its in-flight chunks so the scheduler can retry them. Two limits to plan around in this release: the scheduler runs **one job and one chunk at a time** (it does not yet fan a single job across many agents in parallel), and **hybrid attacks (`-a 6`/`-a 7`, wordlist + mask together) are not fully wired** — pure wordlist (`-a 0`) and pure mask (`-a 3`) attacks are the supported paths.
 
 ### Distributed quick start
 
@@ -210,10 +212,10 @@ The token is single-use; later restarts reconnect with the stored cert (drop `--
 ```
 fj hashlist create --name demo -m 1000        # -> <hashlist-id>
 fj hashlist import <hashlist-id> hashes.txt
-fj job submit --hashlist <hashlist-id> --name demo-run --attack-mode 0 --wordlist <file-id>
+fj job submit --hashlist <hashlist-id> --name demo-run --attack-mode 0 --wordlist rockyou.txt
 ```
 
-The scheduler chunks the keyspace and dispatches chunks to the agent. Remember that a wordlist attack needs the wordlist present on the agent host; mask attacks (`-a 3`) are self-contained.
+`--wordlist` accepts either an already-uploaded file id (UUID) or a path to a local wordlist, which `fj` uploads for you; here the local `rockyou.txt` is uploaded and its id used. The scheduler chunks the keyspace and dispatches chunks to the agent, which fetches the wordlist from the control plane on first use (§7, *File distribution*) — no pre-staging needed. A mask attack instead takes `--mask` (e.g. `--mask '?a?a?a?a'` with `--attack-mode 3`) and carries the mask inline.
 
 **5. Watch it.** Run `FJ_SERVER=http://control-plane:8443 flamejob-tui` — the job shows its per-chunk progress and ETA, and the agent's GPUs appear in the devices panel.
 
@@ -256,7 +258,7 @@ When agents are connected (§7) they push their own device telemetry up the WebS
 
 **Health and readiness.** `GET /healthz` returns `ok` when the process is serving. `GET /metrics`, `GET /agents` and `GET /devices` are useful deeper liveness probes once the system is in use.
 
-**Scaling and current limits.** Version 1.0.2 is a single control plane with a single scheduler that processes one job and one chunk at a time; it does not yet parallelise one job across many agents. Uploaded wordlists, rules and masks live on the control plane's `data_dir` and are not distributed to agents (§7). Plan capacity with those constraints in mind.
+**Scaling and current limits.** Version 1.0.3 is a single control plane with a single scheduler that processes one job and one chunk at a time; it does not yet parallelise one job across many agents. Uploaded wordlists and rules live on the control plane's `data_dir` and are now distributed to agents on demand — each agent fetches and caches the files a chunk needs (§7, *File distribution*). Hybrid attacks (`-a 6`/`-a 7`) are not fully wired yet. Plan capacity with those constraints in mind.
 
 ## 11. Troubleshooting
 
@@ -272,7 +274,102 @@ When agents are connected (§7) they push their own device telemetry up the WebS
 
 ## 12. Reference & appendices
 
-**REST API.** Every route and the capability it requires. The authoritative, always-current contract is the OpenAPI document at `GET /openapi.json`.
+### Command-line reference (all tools)
+
+flamejob ships four executables. `flamejobd`, `flamejob-tui` and `fj-agent` take no subcommands and are driven by flags and environment variables; `fj` is the subcommand-based client. Every documented flag and variable below is exhaustive for 1.0.3 — if a capability isn't listed here, it isn't exposed on the CLI yet.
+
+#### `flamejobd` — control-plane server
+
+Takes **no arguments or subcommands**. All behaviour comes from configuration (built-in defaults → TOML file → `FJ_` environment overrides; see §5). On start it loads config, connects to Postgres, runs migrations, seeds the superadmin on an empty database, and serves. Run it as `flamejobd` (the systemd unit does this as the `flamejob` user).
+
+| Variable | Purpose |
+| --- | --- |
+| `FLAMEJOB_CONFIG` | Path to the TOML config. Default `/etc/flamejob/flamejob.toml`. |
+| `FJ_<SECTION>__<KEY>` | Override any config key, e.g. `FJ_SCHEDULER__RUNNER=remote` (see §5). |
+| `FJ_BOOTSTRAP_PASSWORD` | Password for the `superadmin` seeded on first boot. If unset, a random one is logged once at warn level. |
+| `FJ_LOG` | Log level/filter (e.g. `info`, `debug`, `flamejob=debug`). Default `info`. |
+
+#### `fj` — command-line client
+
+**Global flags** (valid on every subcommand): `--server <url>` (env `FJ_SERVER`, default `http://localhost:8443`) and `--json` (emit raw JSON instead of formatted text). The login token is cached at `~/.config/flamejob/token` and reused by later commands and the TUI.
+
+**Identity**
+
+| Command | Required args / flags | Capability | Does |
+| --- | --- | --- | --- |
+| `fj login` | `--user <name>` `--password <pw>` | none | Authenticate; cache the token; print roles. |
+| `fj whoami` | — | authenticated | Print the current username and roles. |
+| `fj logout` | — | none | Delete the cached token. |
+
+**Jobs** (`fj job <sub>`)
+
+| Command | Args / flags | Capability | Does |
+| --- | --- | --- | --- |
+| `fj job ls` | — | `ViewJobs` | List jobs: id, name, state, priority. |
+| `fj job show` | `<id>` | `ViewJobs` | Full job detail (always JSON). |
+| `fj job submit` | `--hashlist <id>` `--name <n>` `[-a, --attack-mode <int>=0]` `[--wordlist <id\|path>]` `[--mask <str>]` `[--priority <int>=100]` | `SubmitJobs` | Create a job; print its id. See flag notes below. |
+| `fj job pause` | `<id>` | `SubmitJobs` | Pause a running job (resumable). |
+| `fj job resume` | `<id>` | `SubmitJobs` | Return a paused job to the queue. |
+| `fj job cancel` | `<id>` | `SubmitJobs` | Cancel a job (terminal). |
+| `fj job prio` | `<id> <priority>` | `SubmitJobs` | Re-prioritise a job (lower runs first). |
+| `fj job watch` | `<id>` | `ViewJobs` | Follow that job's events over SSE until Ctrl-C. |
+
+`fj job submit` flag notes:
+- `--hashlist <id>` *(required)* — the target hashlist's UUID.
+- `--name <n>` *(required)* — a human-readable job name.
+- `-a, --attack-mode <int>` — hashcat's `-a` value; default `0` (dictionary). `3` is mask.
+- `--wordlist <id|path>` — **either** an already-uploaded file id (UUID) **or** a path to a local wordlist file, which `fj` uploads for you (as kind `wordlist`) and then references. A value that is neither a known UUID nor an existing file is rejected. Omit for attacks that need no wordlist.
+- `--mask <str>` — a hashcat mask (e.g. `?a?a?a?a`) for a mask attack; pair with `-a 3`. Masks travel inline to agents, so they need no file distribution.
+- `--priority <int>` — queue order, lower first; default `100`.
+- *Not exposed as flags in 1.0.3:* rule files and extra hashcat arguments exist in the API's job config but have no `fj` flag yet; submit those via the API directly if needed.
+
+**Hashlists** (`fj hashlist <sub>`)
+
+| Command | Args / flags | Capability | Does |
+| --- | --- | --- | --- |
+| `fj hashlist ls` | — | `ViewJobs` | List hashlists: id, name, `-m` type, cracked/total. |
+| `fj hashlist create` | `--name <n>` `-m, --hash-type <int>` | `Ingest` | Create a hashlist; print its id. `-m` is hashcat's mode. |
+| `fj hashlist import` | `<id> <file>` | `Ingest` | Import hashes from a file, one per line (blank lines skipped); print the new total. |
+| `fj hashlist cracked` | `<id>` | `ViewPlaintext` | Print recovered `hash -> plaintext` pairs (decrypted for this call). |
+
+**Files** (`fj file <sub>`)
+
+| Command | Args / flags | Capability | Does |
+| --- | --- | --- | --- |
+| `fj file add` | `<path>` `[--kind <kind>=other]` | `Ingest` | Upload a file; print its id. `--kind` is one of `wordlist`, `rule`, `mask`, `other` (anything else is stored as `other`). **Set `--kind wordlist` for wordlists** — the default is `other`. |
+| `fj file ls` | — | `ViewJobs` | List files: id, name, kind, size. |
+| `fj file rm` | `<id>` | `Ingest` | Delete a file (removes it from disk too). |
+
+#### `flamejob-tui` — dashboard
+
+Takes **no arguments or subcommands**. Reads `FJ_SERVER` (default `http://localhost:8443`) and uses `FJ_TOKEN` if set, otherwise the token cached by `fj login`. It polls the API (auto-refreshing about once a second) and renders the job queue, per-job chunk breakdown, aggregate keyspace/ETA, and a devices panel.
+
+| Key | Action | Capability |
+| --- | --- | --- |
+| `j` / `k` or ↓ / ↑ | Move the job selection | `ViewJobs` |
+| `r` | Refresh now | `ViewJobs` |
+| `p` | Pause the selected job | `SubmitJobs` |
+| `c` | Cancel the selected job | `SubmitJobs` |
+| `q` / `Esc` | Quit | — |
+
+#### `fj-agent` — GPU worker
+
+Takes **no subcommands**; enrollment and connection are automatic (§7). Flags and their environment equivalents:
+
+| Flag | Env | Default | Meaning |
+| --- | --- | --- | --- |
+| `--server` | `FJ_AGENT_SERVER` | `http://127.0.0.1:8099` | Control-plane base URL — point at your `flamejobd` (note the port differs from flamejobd's default `8443`). |
+| `--name` | `FJ_AGENT_NAME` | `agent` | Human-readable agent name (and certificate CN). |
+| `--claim-token` | `FJ_AGENT_CLAIM_TOKEN` | — | One-time enrollment token; first run only. |
+| `--data-dir` | `FJ_AGENT_DATA_DIR` | `/var/lib/flamejob-agent` | Certificate/key, fetched-file cache (`cache/`), and job scratch. |
+| `--hashcat` | `FJ_AGENT_HASHCAT` | `/usr/bin/hashcat` | hashcat binary on the worker. |
+| `--workload` | `FJ_AGENT_WORKLOAD` | `3` | hashcat workload profile (1–4). |
+
+Log verbosity is set with `FJ_LOG`, as for `flamejobd`.
+
+### REST API
+
+Every route and the capability it requires. The authoritative, always-current contract is the OpenAPI document at `GET /openapi.json`.
 
 | Method & path | Capability |
 | --- | --- |
@@ -303,6 +400,7 @@ When agents are connected (§7) they push their own device telemetry up the WebS
 | `POST /admin/agent-claims` | `ManageAgents` |
 | `POST /agent/enroll` | none (claim-token gated) |
 | `GET /agent/stream` | agent certificate (WebSocket) |
+| `GET /agent/files/{id}` | agent certificate (`x-agent-cert` header) |
 | `POST /admin/users` | `ManageUsers` |
 
 **Capabilities.** `ManageUsers`, `ManageAgents`, `ManageDirectory` (roadmap), `SubmitJobs`, `Ingest`, `ViewPlaintext`, `ViewStats`, `ViewJobs` — see the role matrix in §6.
@@ -311,4 +409,4 @@ When agents are connected (§7) they push their own device telemetry up the WebS
 
 **Config environment map.** Any key maps to `FJ_<SECTION>__<KEY>` (uppercase, `__` between levels): e.g. `FJ_SERVER__BIND`, `FJ_DATABASE__DSN`, `FJ_AUTH__JWT_SECRET`, `FJ_SCHEDULER__RUNNER`, `FJ_TELEMETRY__ENABLED`. See §5.
 
-**Further reading.** The architecture decision record and build spec live in the project workspace. Roadmap items not in 1.0.2: the web UI, and LDAP/AD-mapped RBAC (Phase 4/5).
+**Further reading.** The architecture decision record and build spec live in the project workspace. Roadmap items not in 1.0.3: the web UI, LDAP/AD-mapped RBAC (Phase 4/5), job-level parallelism across agents, and hybrid attack modes (`-a 6`/`-a 7`).

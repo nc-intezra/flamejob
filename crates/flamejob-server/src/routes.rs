@@ -1,4 +1,4 @@
-use axum::extract::{Multipart, Path, State};
+use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::routing::{delete, get, post};
@@ -26,6 +26,7 @@ pub fn router(state: AppState) -> Router {
         .route("/agents", get(crate::agent::list_agents))
         .route("/agent/enroll", post(crate::agent::enroll))
         .route("/agent/stream", get(crate::agent::agent_stream))
+        .route("/agent/files/:id", get(crate::agent::download_file))
         .route("/admin/agent-claims", post(crate::agent::create_claim))
         .route("/openapi.json", get(openapi))
         .route("/auth/login", post(login))
@@ -39,7 +40,14 @@ pub fn router(state: AppState) -> Router {
         .route("/hashlists", get(list_hashlists).post(create_hashlist))
         .route("/hashlists/:id/cracked", get(list_cracked))
         .route("/hashlists/:id/hashes", post(import_hashes))
-        .route("/files", get(list_files).post(upload_file))
+        .route(
+            "/files",
+            // Wordlists are large; lift axum's 2 MB default body cap for uploads
+            // (the handler streams the body to disk, so this isn't held in memory).
+            get(list_files)
+                .post(upload_file)
+                .layer(DefaultBodyLimit::max(8 * 1024 * 1024 * 1024)),
+        )
         .route("/files/:id", delete(delete_file))
         .route("/events", get(events))
         .route("/admin/users", post(create_user))
@@ -524,16 +532,29 @@ async fn upload_file(
     auth: AuthUser,
     mut multipart: Multipart,
 ) -> Result<(StatusCode, Json<FileView>), AppError> {
+    use tokio::io::AsyncWriteExt;
     auth.require(Capability::Ingest)?;
+
+    let id = Uuid::new_v4();
+    let dir = PathBuf::from(&state.cfg.hashcat.data_dir).join("files");
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let path = dir.join(id.to_string());
+
     let mut name: Option<String> = None;
     let mut kind = "other".to_string();
-    let mut data: Vec<u8> = Vec::new();
-    while let Some(field) = multipart
+    let mut hasher = Sha256::new();
+    let mut size_bytes: i64 = 0;
+    let mut wrote_file = false;
+
+    while let Some(mut field) = multipart
         .next_field()
         .await
         .map_err(|e| AppError::BadRequest(e.to_string()))?
     {
-        match field.name() {
+        let field_name = field.name().map(|s| s.to_string());
+        match field_name.as_deref() {
             Some("kind") => {
                 kind = field
                     .text()
@@ -542,11 +563,26 @@ async fn upload_file(
             }
             Some("file") => {
                 name = field.file_name().map(|s| s.to_string());
-                data = field
-                    .bytes()
+                // Stream the body straight to disk, hashing as we go, so even a
+                // multi-gigabyte wordlist never has to sit in memory at once.
+                let mut out = tokio::fs::File::create(&path)
+                    .await
+                    .map_err(|e| AppError::Internal(e.to_string()))?;
+                while let Some(chunk) = field
+                    .chunk()
                     .await
                     .map_err(|e| AppError::BadRequest(e.to_string()))?
-                    .to_vec();
+                {
+                    out.write_all(&chunk)
+                        .await
+                        .map_err(|e| AppError::Internal(e.to_string()))?;
+                    hasher.update(&chunk);
+                    size_bytes += chunk.len() as i64;
+                }
+                out.flush()
+                    .await
+                    .map_err(|e| AppError::Internal(e.to_string()))?;
+                wrote_file = true;
             }
             _ => {}
         }
@@ -554,18 +590,14 @@ async fn upload_file(
     if !matches!(kind.as_str(), "wordlist" | "rule" | "mask" | "other") {
         kind = "other".to_string();
     }
-    let name = name.ok_or_else(|| AppError::BadRequest("missing file field".into()))?;
-    let id = Uuid::new_v4();
-    let dir = PathBuf::from(&state.cfg.hashcat.data_dir).join("files");
-    tokio::fs::create_dir_all(&dir)
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-    let path = dir.join(id.to_string());
-    tokio::fs::write(&path, &data)
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-    let sha256 = hex::encode(Sha256::digest(&data));
-    let size_bytes = data.len() as i64;
+    let name = match name {
+        Some(n) if wrote_file => n,
+        _ => {
+            let _ = tokio::fs::remove_file(&path).await;
+            return Err(AppError::BadRequest("missing file field".into()));
+        }
+    };
+    let sha256 = hex::encode(hasher.finalize());
     sqlx::query(
         "INSERT INTO files (id, name, kind, path, size_bytes, sha256, uploaded_by) \
          VALUES ($1, $2, $3::file_kind, $4, $5, $6, $7)",

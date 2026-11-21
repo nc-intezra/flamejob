@@ -8,9 +8,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use axum::body::Body;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::State;
-use axum::http::StatusCode;
+use axum::extract::{Path as UrlPath, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::Json;
 use flamejob_api::agent::{
@@ -25,6 +26,7 @@ use flamejob_core::{
 use futures_util::{SinkExt, StreamExt};
 use rand::Rng;
 use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
 use crate::auth::AuthUser;
@@ -222,13 +224,27 @@ impl RemoteRunner {
                 .collect(),
             Err(_) => Vec::new(),
         };
+        // `primary` is either a mask string or a path to an uploaded wordlist
+        // under the server's data_dir (basename = file id). Masks travel inline;
+        // wordlists are referenced by id for the agent to fetch.
+        let (mask, wordlist) = match file_id_of_path(&task.primary).await {
+            Some(id) => (None, Some(id)),
+            None => (Some(task.primary.clone()), None),
+        };
+        let mut rules = Vec::new();
+        for r in &task.rules {
+            if let Some(id) = file_id_of_path(r).await {
+                rules.push(id);
+            }
+        }
         AgentTask {
             task_id: task.task_id,
             hash_type: task.hash_type,
             attack_mode: task.attack_mode,
             hashes,
-            primary: task.primary.clone(),
-            rules: task.rules.clone(),
+            mask,
+            wordlist,
+            rules,
             keyspace_offset: task.keyspace_offset,
             keyspace_len: task.keyspace_len,
             extra_args: task.extra_args.clone(),
@@ -370,6 +386,61 @@ pub async fn list_agents(
             })
             .collect(),
     ))
+}
+
+/// GET /agent/files/:id — stream an uploaded wordlist/rule file to an agent.
+/// Authenticated the same way as the WS: the agent presents its issued client
+/// certificate in `x-agent-cert`, matched by fingerprint to an enrolled agent.
+pub async fn download_file(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    UrlPath(id): UrlPath<Uuid>,
+) -> Result<Response, AppError> {
+    // The cert PEM is hex-encoded in the header (PEM newlines aren't valid in a
+    // header value).
+    let cert_hex = headers
+        .get("x-agent-cert")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| AppError::Unauthorized("missing agent certificate".into()))?;
+    let cert_pem = hex::decode(cert_hex)
+        .ok()
+        .and_then(|b| String::from_utf8(b).ok())
+        .ok_or_else(|| AppError::Unauthorized("bad certificate encoding".into()))?;
+    let fingerprint = pki::fingerprint_of_pem(&cert_pem)
+        .map_err(|_| AppError::Unauthorized("bad certificate".into()))?;
+    let enrolled: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM agents WHERE fingerprint = $1 AND status <> 'revoked'")
+            .bind(&fingerprint)
+            .fetch_optional(&state.db)
+            .await?;
+    if enrolled.is_none() {
+        return Err(AppError::Unauthorized("certificate not enrolled".into()));
+    }
+    let path: Option<String> = sqlx::query_scalar("SELECT path FROM files WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?;
+    let Some(path) = path else {
+        return Err(AppError::NotFound("file not found".into()));
+    };
+    let file = tokio::fs::File::open(&path)
+        .await
+        .map_err(|e| AppError::NotFound(format!("file unavailable: {e}")))?;
+    Ok(Response::new(Body::from_stream(ReaderStream::new(file))))
+}
+
+/// Resolve an uploaded-file path (`{data_dir}/files/{id}`) to its file id, if
+/// the basename is a UUID and the file exists on disk. Returns None for a mask
+/// string or any non-file path.
+async fn file_id_of_path(p: &str) -> Option<Uuid> {
+    let id = std::path::Path::new(p)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .and_then(|s| Uuid::parse_str(s).ok())?;
+    match tokio::fs::metadata(p).await {
+        Ok(m) if m.is_file() => Some(id),
+        _ => None,
+    }
 }
 
 // ======================= WebSocket task stream =======================
@@ -621,7 +692,8 @@ mod tests {
             hash_type: 0,
             attack_mode: 3,
             hashes: vec![],
-            primary: "?d?d".into(),
+            mask: Some("?d?d".into()),
+            wordlist: None,
             rules: vec![],
             keyspace_offset: 0,
             keyspace_len: 0,

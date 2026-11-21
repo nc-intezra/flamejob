@@ -67,8 +67,13 @@ enum JobCmd {
         attack_mode: i16,
         #[arg(long)]
         name: String,
+        /// A wordlist file id (UUID) already uploaded, or a path to a local
+        /// wordlist file, which is uploaded for you.
         #[arg(long)]
-        wordlist: Option<Uuid>,
+        wordlist: Option<String>,
+        /// Mask string for a mask attack (`-a 3`), e.g. '?a?a?a?a?a?a'.
+        #[arg(long)]
+        mask: Option<String>,
         #[arg(long, default_value_t = 100)]
         priority: i32,
     },
@@ -194,17 +199,38 @@ async fn main() -> Result<()> {
                 attack_mode,
                 name,
                 wordlist,
+                mask,
                 priority,
             } => {
+                // Accept either an existing file id (UUID) or a local path,
+                // uploading the file in the latter case.
+                let wordlist_file_id = match wordlist {
+                    None => None,
+                    Some(w) => match Uuid::parse_str(&w) {
+                        Ok(id) => Some(id),
+                        Err(_) => {
+                            let p = std::path::Path::new(&w);
+                            if p.is_file() {
+                                let f = client.upload_file(p, "wordlist").await?;
+                                println!("uploaded wordlist {} ({})", f.id, f.name);
+                                Some(f.id)
+                            } else {
+                                anyhow::bail!(
+                                    "--wordlist '{w}' is neither a known file id (UUID) nor a path to a local file"
+                                );
+                            }
+                        }
+                    },
+                };
                 let req = JobCreate {
                     name,
                     hashlist_id: hashlist,
                     attack_mode,
                     priority: Some(priority),
                     config: JobConfig {
-                        wordlist_file_id: wordlist,
+                        wordlist_file_id,
                         rule_file_ids: vec![],
-                        mask: None,
+                        mask,
                         extra_args: vec![],
                     },
                 };
