@@ -13,8 +13,8 @@ path = "src/main.rs"
 maintainer = "nc-intezra <nc-intezra@users.noreply.github.com>"
 section = "net"
 priority = "optional"
-# Built on Ubuntu 24.04 (glibc 2.39); dependencies are auto-computed from the
-# binary and resolve on Ubuntu 24.04 through 26.04.
+# Built on Ubuntu 22.04 (glibc 2.35); dependencies are auto-computed from the
+# binary and resolve on Ubuntu 22.04 through newer releases.
 assets = [
     ["target/release/flamejobd", "usr/bin/", "755"],
     ["../../README.md", "usr/share/doc/flamejob-server/README.md", "644"],

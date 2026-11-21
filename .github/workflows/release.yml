@@ -18,8 +18,10 @@ permissions:
 jobs:
   debs:
     name: build & attach .deb packages
-    # Ubuntu 24.04 (glibc 2.39): packages install on 24.04 through 26.04.
-    runs-on: ubuntu-24.04
+    # Ubuntu 22.04 (glibc 2.35): binaries link against the older glibc, so the
+    # packages install and run on 22.04 and every newer release (glibc is
+    # forward-compatible); cargo-deb stamps libc6 (>= 2.35) accordingly.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
         with:
