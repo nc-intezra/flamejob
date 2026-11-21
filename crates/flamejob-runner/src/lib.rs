@@ -26,15 +26,25 @@ pub struct LocalRunner {
     hashcat_bin: String,
     workload: u8,
     data_dir: PathBuf,
+    /// How many hashcat subprocesses this box will run at once. Each chunk owns
+    /// its own `--session`, outfile and restore file, so concurrent runs are
+    /// independent; this bounds contention on the local GPUs.
+    parallelism: usize,
     children: Arc<Mutex<HashMap<Uuid, Child>>>,
 }
 
 impl LocalRunner {
-    pub fn new(hashcat_bin: impl Into<String>, workload: u8, data_dir: impl Into<PathBuf>) -> Self {
+    pub fn new(
+        hashcat_bin: impl Into<String>,
+        workload: u8,
+        data_dir: impl Into<PathBuf>,
+        parallelism: usize,
+    ) -> Self {
         Self {
             hashcat_bin: hashcat_bin.into(),
             workload,
             data_dir: data_dir.into(),
+            parallelism: parallelism.max(1),
             children: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -215,6 +225,10 @@ impl Runner for LocalRunner {
             let _ = child.kill().await;
         }
         Ok(())
+    }
+
+    async fn capacity(&self) -> usize {
+        self.parallelism
     }
 }
 

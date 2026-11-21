@@ -1,13 +1,16 @@
 use chrono::{DateTime, Utc};
 use ratatui::{
-    layout::{Alignment, Constraint, Layout, Rect},
+    layout::{Alignment, Constraint, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Cell, Padding, Paragraph, Row, Table},
+    widgets::{
+        Block, BorderType, Borders, Cell, Padding, Paragraph, Row, Scrollbar, ScrollbarOrientation,
+        ScrollbarState, Table,
+    },
     Frame,
 };
 
-use crate::model::{Dashboard, Device, JobRow};
+use crate::model::{Dashboard, Device, JobRow, UiState};
 
 // One Dark-ish palette.
 const BG: Color = Color::Rgb(24, 25, 30);
@@ -21,7 +24,7 @@ const BAD: Color = Color::Rgb(224, 108, 117);
 const SEL: Color = Color::Rgb(45, 50, 64);
 const TRACK: Color = Color::Rgb(55, 58, 68);
 
-pub fn render(f: &mut Frame, d: &Dashboard) {
+pub fn render(f: &mut Frame, d: &Dashboard, st: &mut UiState) {
     let area = f.area();
     f.render_widget(Block::default().style(Style::default().bg(BG)), area);
 
@@ -36,14 +39,32 @@ pub fn render(f: &mut Frame, d: &Dashboard) {
 
     let body =
         Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)]).split(rows[1]);
-    jobs_table(f, body[0], d);
+    jobs_table(f, body[0], d, st);
 
     let right =
         Layout::vertical([Constraint::Percentage(52), Constraint::Percentage(48)]).split(body[1]);
-    job_detail(f, right[0], d);
+    job_detail(f, right[0], d, st);
     devices(f, right[1], d);
 
-    footer(f, rows[2]);
+    footer(f, rows[2], d);
+}
+
+/// Draw a vertical scrollbar on the right border of `area` when `total` rows
+/// exceed the `visible` row budget. `pos` is the index to point at.
+fn scrollbar(f: &mut Frame, area: Rect, total: usize, visible: usize, pos: usize) {
+    if total <= visible {
+        return;
+    }
+    let mut sbs = ScrollbarState::new(total.saturating_sub(visible).max(1))
+        .position(pos.min(total.saturating_sub(1)));
+    let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(None)
+        .end_symbol(None)
+        .track_symbol(Some("│"))
+        .thumb_symbol("█")
+        .style(Style::default().fg(DIM))
+        .thumb_style(Style::default().fg(ACCENT));
+    f.render_stateful_widget(sb, area.inner(Margin::new(0, 1)), &mut sbs);
 }
 
 fn header(f: &mut Frame, area: Rect, d: &Dashboard) {
@@ -75,34 +96,29 @@ fn header(f: &mut Frame, area: Rect, d: &Dashboard) {
     f.render_widget(Paragraph::new(right), inner);
 }
 
-fn jobs_table(f: &mut Frame, area: Rect, d: &Dashboard) {
+fn jobs_table(f: &mut Frame, area: Rect, d: &Dashboard, st: &mut UiState) {
     let header = Row::new(["JOB", "STATE", "PROGRESS", "SPEED", "ETA", "CRACKED"])
         .style(Style::default().fg(DIM).add_modifier(Modifier::BOLD));
     let bar_w = 14usize;
-    let rows =
-        d.jobs.iter().enumerate().map(|(i, j)| {
-            let sel = i == d.selected;
-            let cells =
-                vec![
-                    Cell::from(j.name.clone()).style(Style::default().fg(INK)),
-                    Cell::from(state_label(&j.state)),
-                    Cell::from(progress_bar(j.progress, bar_w, &j.state)),
-                    Cell::from(fmt_speed(j.speed)).style(Style::default().fg(if j.speed > 0 {
-                        INK
-                    } else {
-                        DIM
-                    })),
-                    Cell::from(fmt_eta(j.eta, d.now))
-                        .style(Style::default().fg(if j.eta.is_some() { WARN } else { DIM })),
-                    Cell::from(format!("{}/{}", j.cracked, j.total))
-                        .style(Style::default().fg(crack_color(j))),
-                ];
-            let mut style = Style::default();
-            if sel {
-                style = style.bg(SEL);
-            }
-            Row::new(cells).style(style)
-        });
+    let rows = d.jobs.iter().map(|j| {
+        Row::new(vec![
+            Cell::from(j.name.clone()).style(Style::default().fg(INK)),
+            Cell::from(state_label(&j.state)),
+            Cell::from(progress_bar(j.progress, bar_w, &j.state)),
+            Cell::from(fmt_speed(j.speed)).style(Style::default().fg(if j.speed > 0 {
+                INK
+            } else {
+                DIM
+            })),
+            Cell::from(fmt_eta(j.eta, d.now)).style(Style::default().fg(if j.eta.is_some() {
+                WARN
+            } else {
+                DIM
+            })),
+            Cell::from(format!("{}/{}", j.cracked, j.total))
+                .style(Style::default().fg(crack_color(j))),
+        ])
+    });
     let widths = [
         Constraint::Min(16),
         Constraint::Length(11),
@@ -111,14 +127,29 @@ fn jobs_table(f: &mut Frame, area: Rect, d: &Dashboard) {
         Constraint::Length(8),
         Constraint::Length(9),
     ];
+    let hidden = d.total_jobs.saturating_sub(d.jobs.len());
+    let title = if d.hide_finished && hidden > 0 {
+        format!("Jobs · {} shown · {hidden} finished hidden", d.jobs.len())
+    } else {
+        format!("Jobs · {}", d.jobs.len())
+    };
     let table = Table::new(rows, widths)
         .header(header)
         .column_spacing(1)
-        .block(panel("Jobs"));
-    f.render_widget(table, area);
+        .block(panel(&title))
+        .row_highlight_style(Style::default().bg(SEL));
+    if d.jobs.is_empty() {
+        st.jobs.select(None);
+    } else {
+        st.jobs.select(Some(d.selected.min(d.jobs.len() - 1)));
+    }
+    f.render_stateful_widget(table, area, &mut st.jobs);
+    // Data rows visible = inner height (area minus borders) minus the header row.
+    let visible = (area.height as usize).saturating_sub(3);
+    scrollbar(f, area, d.jobs.len(), visible, d.selected);
 }
 
-fn job_detail(f: &mut Frame, area: Rect, d: &Dashboard) {
+fn job_detail(f: &mut Frame, area: Rect, d: &Dashboard, st: &mut UiState) {
     let title = match d.selected_job() {
         Some(j) => format!("Job · {}", j.name),
         None => "Job".into(),
@@ -183,9 +214,31 @@ fn job_detail(f: &mut Frame, area: Rect, d: &Dashboard) {
         Constraint::Length(10),
         Constraint::Length(9),
     ];
-    f.render_widget(
+    // Keep the first running chunk in view as the list scrolls (up to
+    // max_chunks chunks now run, so a long parallel job overflows the pane).
+    if d.chunks.is_empty() {
+        st.chunks.select(None);
+    } else {
+        let active = d
+            .chunks
+            .iter()
+            .position(|c| c.state == "running")
+            .or_else(|| d.chunks.iter().position(|c| c.state == "pending"))
+            .unwrap_or(0);
+        st.chunks.select(Some(active.min(d.chunks.len() - 1)));
+    }
+    f.render_stateful_widget(
         Table::new(rows, widths).header(header).column_spacing(1),
         parts[1],
+        &mut st.chunks,
+    );
+    let visible = (parts[1].height as usize).saturating_sub(1);
+    scrollbar(
+        f,
+        parts[1],
+        d.chunks.len(),
+        visible,
+        st.chunks.selected().unwrap_or(0),
     );
 
     // Aggregate keyspace + per-job ETA, computed across the job's chunks.
@@ -290,22 +343,34 @@ fn devices(f: &mut Frame, area: Rect, d: &Dashboard) {
     );
 }
 
-fn footer(f: &mut Frame, area: Rect) {
-    let line = Line::from(vec![
+fn footer(f: &mut Frame, area: Rect, d: &Dashboard) {
+    let mut spans = vec![
         key("↑/↓"),
         lbl(" select  "),
-        key("enter"),
-        lbl(" focus  "),
         key("r"),
         lbl(" refresh  "),
-        key("p"),
-        lbl(" pause  "),
-        key("c"),
-        lbl(" cancel  "),
-        key("q"),
-        lbl(" quit"),
-    ]);
-    f.render_widget(Paragraph::new(line).style(Style::default().bg(BG)), area);
+        key("f"),
+        lbl(if d.hide_finished {
+            " show finished  "
+        } else {
+            " hide finished  "
+        }),
+    ];
+    if d.can_submit {
+        spans.extend([
+            key("p"),
+            lbl(" pause  "),
+            key("c"),
+            lbl(" cancel  "),
+            key("C"),
+            lbl(" clear results  "),
+        ]);
+    }
+    spans.extend([key("q"), lbl(" quit")]);
+    f.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(BG)),
+        area,
+    );
 }
 
 // ---- helpers ----

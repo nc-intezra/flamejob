@@ -46,4 +46,15 @@ pub trait Runner: Send + Sync {
     async fn pause(&self, handle: &RunHandle) -> Result<()>;
     async fn resume(&self, handle: &RunHandle) -> Result<()>;
     async fn cancel(&self, handle: &RunHandle) -> Result<()>;
+
+    /// How many chunk tasks may be in flight concurrently right now.
+    ///
+    /// The scheduler uses this to fan a single job's chunks across the available
+    /// compute: for the local runner it is a fixed parallelism, for the remote
+    /// runner it tracks the fleet's current slot capacity and so grows and
+    /// shrinks as agents connect, disconnect and report free slots. The default
+    /// of `1` preserves strictly serial, one-chunk-at-a-time execution.
+    async fn capacity(&self) -> usize {
+        1
+    }
 }

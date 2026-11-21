@@ -25,3 +25,21 @@ plaintext_key_file = "/etc/flamejob/plain.key"
 # keyspace units per chunk; 0 or unknown keyspace = one task
 chunk_size = 50000000
 max_chunks = 500
+# "local" runs hashcat here; "remote" dispatches chunks to enrolled agents
+# runner = "local"
+# concurrent hashcat processes for the active job on the local runner
+# (the remote runner fans across the fleet's advertised slots instead)
+# local_parallelism = 1
+
+[web]
+# browser dashboard (static SPA that calls the API); mirrors the TUI
+enabled = true
+bind    = "0.0.0.0:9443"
+# set both for HTTPS; leave unset for plain HTTP
+# tls_cert = "/etc/flamejob/web.crt"
+# tls_key  = "/etc/flamejob/web.key"
+# API URL the browser should call (default: derived from page host + API port)
+# api_base = "https://flamejob.example/api"
+theme = "dark"
+# CORS origins allowed to call the API; empty list = any origin
+# allowed_origins = ["https://flamejob.example"]

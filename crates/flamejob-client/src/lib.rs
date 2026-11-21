@@ -108,6 +108,17 @@ impl Client {
         Ok(())
     }
 
+    /// Remove all finished jobs from the queue (requires SubmitJobs).
+    pub async fn clear_finished_jobs(&self) -> Result<ClearedJobs> {
+        Ok(self
+            .request(Method::POST, "/jobs/clear")
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+
     pub async fn set_priority(&self, id: Uuid, priority: i32) -> Result<()> {
         self.request(Method::PATCH, &format!("/jobs/{id}"))
             .json(&serde_json::json!({ "priority": priority }))

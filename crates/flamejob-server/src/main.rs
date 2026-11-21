@@ -6,11 +6,13 @@ mod config;
 mod crypto;
 mod error;
 mod metrics;
+mod openapi;
 mod pki;
 mod routes;
 mod scheduler;
 mod state;
 mod telemetry;
+mod web;
 
 use std::net::SocketAddr;
 
@@ -40,6 +42,7 @@ async fn main() -> Result<()> {
     bootstrap::ensure_superadmin(&state).await?;
     scheduler::spawn(state.clone());
     telemetry::spawn(state.clone());
+    web::spawn(state.clone());
 
     let app = routes::router(state);
     let addr: SocketAddr = cfg.server.bind.parse()?;

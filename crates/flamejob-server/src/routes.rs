@@ -1,6 +1,7 @@
 use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, Method, StatusCode};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
+use axum::response::Html;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use chrono::Utc;
@@ -11,6 +12,7 @@ use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use uuid::Uuid;
 
 use crate::auth::{self, AuthUser};
@@ -18,9 +20,11 @@ use crate::error::AppError;
 use crate::state::AppState;
 
 pub fn router(state: AppState) -> Router {
+    let cors = cors_layer(&state);
     Router::new()
         .route("/healthz", get(healthz))
         .route("/metrics", get(metrics))
+        .route("/docs", get(api_docs))
         .route("/devices", get(list_devices))
         .route("/devices/:name/history", get(device_history))
         .route("/agents", get(crate::agent::list_agents))
@@ -32,6 +36,7 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/login", post(login))
         .route("/auth/me", get(me))
         .route("/jobs", get(list_jobs).post(create_job))
+        .route("/jobs/clear", post(clear_finished_jobs))
         .route("/jobs/:id", get(get_job).patch(patch_job))
         .route("/jobs/:id/tasks", get(list_job_tasks))
         .route("/jobs/:id/pause", post(pause_job))
@@ -51,7 +56,38 @@ pub fn router(state: AppState) -> Router {
         .route("/files/:id", delete(delete_file))
         .route("/events", get(events))
         .route("/admin/users", post(create_user))
+        .layer(cors)
         .with_state(state)
+}
+
+/// CORS for the API so the browser-served dashboard (a different origin, e.g.
+/// `:9443`) can call it. Bearer-token auth still gates every protected route;
+/// with no configured origins we allow any (no credentials/cookies are used).
+fn cors_layer(state: &AppState) -> CorsLayer {
+    let base = CorsLayer::new()
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers(Any);
+    let origins = &state.cfg.web.allowed_origins;
+    if origins.is_empty() {
+        base.allow_origin(Any)
+    } else {
+        let list: Vec<HeaderValue> = origins
+            .iter()
+            .filter_map(|o| o.parse::<HeaderValue>().ok())
+            .collect();
+        base.allow_origin(AllowOrigin::list(list))
+    }
+}
+
+/// Interactive, browseable API reference (RapiDoc) bound to `/openapi.json`.
+async fn api_docs() -> Html<&'static str> {
+    Html(include_str!("web/docs.html"))
 }
 
 // ---- meta ----
@@ -65,12 +101,18 @@ async fn metrics(State(state): State<AppState>) -> String {
 }
 
 async fn openapi() -> Json<utoipa::openapi::OpenApi> {
-    use utoipa::OpenApi;
-    Json(ApiDoc::openapi())
+    Json(crate::openapi::document())
 }
 
 // ---- auth ----
 
+#[utoipa::path(
+    post, path = "/auth/login", tag = "auth", request_body = LoginRequest,
+    responses(
+        (status = 200, description = "Issued JWT and roles", body = LoginResponse),
+        (status = 401, description = "Invalid credentials")
+    )
+)]
 async fn login(
     State(state): State<AppState>,
     Json(body): Json<LoginRequest>,
@@ -97,6 +139,10 @@ async fn login(
     }))
 }
 
+#[utoipa::path(
+    get, path = "/auth/me", tag = "auth", security(("bearer" = [])),
+    responses((status = 200, body = MeResponse), (status = 401, description = "Unauthenticated"))
+)]
 async fn me(auth: AuthUser) -> Json<MeResponse> {
     Json(MeResponse {
         id: auth.id,
@@ -116,6 +162,10 @@ async fn load_roles(state: &AppState, user_id: Uuid) -> Result<Vec<flamejob_core
 
 // ---- jobs ----
 
+#[utoipa::path(
+    get, path = "/jobs", tag = "jobs", security(("bearer" = [])),
+    responses((status = 200, body = Vec<JobView>, description = "All jobs, queue order"))
+)]
 async fn list_jobs(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -128,6 +178,10 @@ async fn list_jobs(
     Ok(Json(rows.into_iter().map(job_view).collect()))
 }
 
+#[utoipa::path(
+    post, path = "/jobs", tag = "jobs", security(("bearer" = [])), request_body = JobCreate,
+    responses((status = 201, body = JobView), (status = 403, description = "Missing SubmitJobs"))
+)]
 async fn create_job(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -175,6 +229,36 @@ async fn create_job(
     Ok((StatusCode::CREATED, Json(view)))
 }
 
+/// POST /jobs/clear — remove all finished jobs (and, by cascade, their tasks)
+/// from the queue. Cracked hashes and hashlists are untouched. Requires
+/// `SubmitJobs` (superadmin and operator).
+#[utoipa::path(
+    post, path = "/jobs/clear", tag = "jobs", security(("bearer" = [])),
+    responses(
+        (status = 200, body = ClearedJobs, description = "Finished jobs removed"),
+        (status = 403, description = "Missing SubmitJobs")
+    )
+)]
+async fn clear_finished_jobs(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> Result<Json<ClearedJobs>, AppError> {
+    auth.require(Capability::SubmitJobs)?;
+    let cleared = sqlx::query(
+        "DELETE FROM jobs WHERE state IN ('completed','exhausted','cancelled','error')",
+    )
+    .execute(&state.db)
+    .await?
+    .rows_affected() as i64;
+    tracing::info!(user = %auth.username, cleared, "cleared finished jobs");
+    Ok(Json(ClearedJobs { cleared }))
+}
+
+#[utoipa::path(
+    get, path = "/jobs/{id}", tag = "jobs", security(("bearer" = [])),
+    params(("id" = Uuid, Path, description = "Job id")),
+    responses((status = 200, body = JobView), (status = 404, description = "Not found"))
+)]
 async fn get_job(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -189,11 +273,16 @@ async fn get_job(
     Ok(Json(job_view(row)))
 }
 
-#[derive(serde::Deserialize)]
-struct PatchJob {
-    priority: i32,
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+pub struct PatchJob {
+    pub priority: i32,
 }
 
+#[utoipa::path(
+    patch, path = "/jobs/{id}", tag = "jobs", security(("bearer" = [])),
+    params(("id" = Uuid, Path, description = "Job id")), request_body = PatchJob,
+    responses((status = 204, description = "Priority updated"))
+)]
 async fn patch_job(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -209,9 +298,19 @@ async fn patch_job(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(
+    post, path = "/jobs/{id}/pause", tag = "jobs", security(("bearer" = [])),
+    params(("id" = Uuid, Path, description = "Job id")),
+    responses((status = 202, description = "Pause requested"))
+)]
 async fn pause_job(s: State<AppState>, a: AuthUser, p: Path<Uuid>) -> Result<StatusCode, AppError> {
     set_job_state(s, a, p, JobState::Paused).await
 }
+#[utoipa::path(
+    post, path = "/jobs/{id}/resume", tag = "jobs", security(("bearer" = [])),
+    params(("id" = Uuid, Path, description = "Job id")),
+    responses((status = 202, description = "Resume requested (re-queues)"))
+)]
 async fn resume_job(
     s: State<AppState>,
     a: AuthUser,
@@ -219,6 +318,11 @@ async fn resume_job(
 ) -> Result<StatusCode, AppError> {
     set_job_state(s, a, p, JobState::Queued).await
 }
+#[utoipa::path(
+    post, path = "/jobs/{id}/cancel", tag = "jobs", security(("bearer" = [])),
+    params(("id" = Uuid, Path, description = "Job id")),
+    responses((status = 202, description = "Cancel requested"))
+)]
 async fn cancel_job(
     s: State<AppState>,
     a: AuthUser,
@@ -252,6 +356,10 @@ async fn set_job_state(
 
 // ---- hashlists ----
 
+#[utoipa::path(
+    get, path = "/hashlists", tag = "hashlists", security(("bearer" = [])),
+    responses((status = 200, body = Vec<HashlistView>))
+)]
 async fn list_hashlists(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -275,6 +383,10 @@ async fn list_hashlists(
     ))
 }
 
+#[utoipa::path(
+    post, path = "/hashlists", tag = "hashlists", security(("bearer" = [])),
+    request_body = HashlistCreate, responses((status = 201, body = HashlistView))
+)]
 async fn create_hashlist(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -303,6 +415,11 @@ async fn create_hashlist(
 
 // ---- admin ----
 
+#[utoipa::path(
+    post, path = "/admin/users", tag = "auth", security(("bearer" = [])),
+    request_body = UserCreate,
+    responses((status = 201, description = "User created"), (status = 403, description = "Missing ManageUsers"))
+)]
 async fn create_user(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -333,6 +450,11 @@ async fn create_user(
     Ok(StatusCode::CREATED)
 }
 
+#[utoipa::path(
+    get, path = "/hashlists/{id}/cracked", tag = "hashlists", security(("bearer" = [])),
+    params(("id" = Uuid, Path, description = "Hashlist id")),
+    responses((status = 200, body = Vec<CrackedHash>), (status = 403, description = "Missing ViewPlaintext"))
+)]
 async fn list_cracked(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -359,6 +481,10 @@ async fn list_cracked(
 }
 
 #[allow(clippy::type_complexity)]
+#[utoipa::path(
+    get, path = "/devices", tag = "telemetry", security(("bearer" = [])),
+    responses((status = 200, body = Vec<DeviceView>, description = "Current device snapshot"))
+)]
 async fn list_devices(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -410,6 +536,11 @@ async fn list_devices(
 }
 
 #[allow(clippy::type_complexity)]
+#[utoipa::path(
+    get, path = "/devices/{name}/history", tag = "telemetry", security(("bearer" = [])),
+    params(("name" = String, Path, description = "Device name")),
+    responses((status = 200, body = Vec<DeviceSample>, description = "Recent samples, newest first"))
+)]
 async fn device_history(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -456,6 +587,12 @@ async fn device_history(
     Ok(Json(out))
 }
 
+#[utoipa::path(
+    post, path = "/hashlists/{id}/hashes", tag = "hashlists", security(("bearer" = [])),
+    params(("id" = Uuid, Path, description = "Hashlist id")),
+    request_body(content = String, content_type = "text/plain", description = "One hash per line"),
+    responses((status = 200, body = HashlistView))
+)]
 async fn import_hashes(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -504,6 +641,10 @@ async fn import_hashes(
     }))
 }
 
+#[utoipa::path(
+    get, path = "/files", tag = "files", security(("bearer" = [])),
+    responses((status = 200, body = Vec<FileView>))
+)]
 async fn list_files(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -527,6 +668,11 @@ async fn list_files(
     ))
 }
 
+#[utoipa::path(
+    post, path = "/files", tag = "files", security(("bearer" = [])),
+    request_body(content_type = "multipart/form-data", description = "Fields: file (binary), kind (wordlist|rule|mask|other)"),
+    responses((status = 201, body = FileView))
+)]
 async fn upload_file(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -623,6 +769,11 @@ async fn upload_file(
     ))
 }
 
+#[utoipa::path(
+    delete, path = "/files/{id}", tag = "files", security(("bearer" = [])),
+    params(("id" = Uuid, Path, description = "File id")),
+    responses((status = 204, description = "Deleted"))
+)]
 async fn delete_file(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -643,6 +794,10 @@ async fn delete_file(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(
+    get, path = "/events", tag = "meta", security(("bearer" = [])),
+    responses((status = 200, description = "Server-sent event stream of Event payloads", body = Event))
+)]
 async fn events(
     State(state): State<AppState>,
     auth: AuthUser,
@@ -714,6 +869,11 @@ fn parse_task_state(s: &str) -> TaskState {
     serde_json::from_value(serde_json::Value::String(s.to_string())).unwrap_or(TaskState::Pending)
 }
 
+#[utoipa::path(
+    get, path = "/jobs/{id}/tasks", tag = "jobs", security(("bearer" = [])),
+    params(("id" = Uuid, Path, description = "Job id")),
+    responses((status = 200, body = Vec<TaskView>, description = "Chunk tasks, keyspace order"))
+)]
 async fn list_job_tasks(
     State(state): State<AppState>,
     auth: AuthUser,

@@ -173,10 +173,14 @@ async fn run(args: &Args, cert_pem: String) -> Result<()> {
         })
         .await?;
 
+    // The agent advertises a single slot and runs one chunk at a time, so its
+    // local runner parallelism is 1; the control plane achieves per-job
+    // parallelism by fanning chunks across many agents.
     let runner = Arc::new(LocalRunner::new(
         args.hashcat.clone(),
         args.workload,
         args.data_dir.clone(),
+        1,
     ));
     let current: Arc<Mutex<Option<(Uuid, RunHandle)>>> = Arc::new(Mutex::new(None));
 

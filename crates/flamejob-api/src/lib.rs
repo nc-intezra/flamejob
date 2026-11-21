@@ -116,6 +116,13 @@ pub struct UserCreate {
     pub roles: Vec<Role>,
 }
 
+/// Result of clearing finished jobs from the queue.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ClearedJobs {
+    /// Number of finished jobs (and their tasks) removed.
+    pub cleared: i64,
+}
+
 /// RFC 7807 problem+json error body.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Problem {
@@ -212,6 +219,7 @@ impl Event {
         CrackedHash,
         FileView,
         UserCreate,
+        ClearedJobs,
         Problem,
         Event,
         DeviceView,

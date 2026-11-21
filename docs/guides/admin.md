@@ -6,7 +6,7 @@ flamejob is a distributed hashcat job queue. A single control-plane service, `fl
 
 This guide is for the people who stand that system up and keep it running: the **superadmin** (the local break-glass account) and **admin** roles, plus anyone responsible for deployment, configuration, user and agent management, and monitoring. Running and watching jobs day to day is covered separately in the **Operator Guide** and the **Viewer Guide**.
 
-It documents flamejob **1.0.4**. A web UI and directory-mapped (LDAP/AD) RBAC are on the roadmap but are not part of this release; where they come up, they are flagged as planned.
+It documents flamejob **1.0.4**, plus the in-development browser dashboard (§13) and multi-agent job parallelism. Directory-mapped (LDAP/AD) RBAC remains on the roadmap and is flagged as planned where it comes up.
 
 ## 2. Concepts primer
 
@@ -103,9 +103,16 @@ flamejob reads configuration from three layers, in increasing precedence: built-
 | `[scheduler]` | `chunk_size` | `50000000` | Keyspace units per chunk; `0` / unknown = one task. |
 | `[scheduler]` | `max_chunks` | `500` | Upper bound on chunks per job. |
 | `[scheduler]` | `runner` | `local` | `local` = hashcat here; `remote` = dispatch to agents. |
+| `[scheduler]` | `local_parallelism` | `1` | Concurrent hashcat processes for the active job on the **local** runner. The remote runner instead fans across the fleet's free slots. |
 | `[telemetry]` | `enabled` | `true` | Run the local GPU/host collector. |
 | `[telemetry]` | `sample_interval_secs` | `5` | Seconds between samples. |
 | `[telemetry]` | `history_limit` | `500` | Max rows returned by the device-history endpoint. |
+| `[web]` | `enabled` | `true` | Serve the browser dashboard (§13). |
+| `[web]` | `bind` | `0.0.0.0:9443` | Dashboard listen address. |
+| `[web]` | `tls_cert` / `tls_key` | *(none)* | PEM cert + key; both set ⇒ HTTPS, else plain HTTP. |
+| `[web]` | `api_base` | *(none)* | API URL the browser calls; unset ⇒ derived from the page host and API port. |
+| `[web]` | `theme` | `dark` | Default dashboard theme (`dark` / `light`). |
+| `[web]` | `allowed_origins` | *(any)* | CORS origins allowed to call the API; empty = any. |
 
 **Watch for these.** The shipped `deploy/flamejob.toml.example` and `install.sh` don't write every section — notably `[scheduler].runner` and the entire `[telemetry]` block are absent. That is harmless, because the defaults above fill them in, but it means distributed mode and telemetry tuning are enabled by adding those keys yourself (or via `FJ_` env vars). The `flamejob-server` package is the exception: its postinst writes a default config that already sets `[scheduler].runner = "local"` and points `[crypto].plaintext_key_file` at the generated key. Always replace the default `jwt_secret`, and point `[crypto].plaintext_key_file` at a real key so cracked plaintext is encrypted at rest (§9).
 
@@ -136,7 +143,7 @@ In practice: **admins manage people and agents but cannot run jobs or read crack
 
 ## 7. Managing the agent fleet (distributed mode)
 
-By default the scheduler runs hashcat locally (`[scheduler].runner = "local"`). Set `runner = "remote"` to dispatch chunk tasks to a fleet of enrolled `fj-agent` workers instead. The control plane schedules exactly as before — chunking, ETA and early-finish are unchanged — but each chunk executes on an agent.
+By default the scheduler runs hashcat locally (`[scheduler].runner = "local"`). Set `runner = "remote"` to dispatch chunk tasks to a fleet of enrolled `fj-agent` workers instead. The control plane schedules exactly as before — chunking, ETA and early-finish are unchanged — but each chunk executes on an agent. The active job's chunks run in parallel across the fleet: the scheduler keeps one chunk in flight for every free slot the connected agents advertise, so a job gets faster as you add agents. Each agent advertises one slot (runs one chunk at a time); scale throughput by enrolling more agents.
 
 **Enrolling an agent** is a one-time, token-gated certificate exchange:
 
@@ -171,7 +178,7 @@ Log verbosity is set with `FJ_LOG`. Note the agent's default `--server` port (`8
 
 **File distribution.** As of 1.0.3 the control plane distributes wordlist and rule files to agents automatically. When a chunk task references a wordlist or rule (by file id), the agent fetches it from the control plane over `GET /agent/files/{id}` — authenticated with the same client certificate it uses on the WebSocket — and caches it under `{data_dir}/cache/{id}`, re-using the cached copy on later tasks. Mask attacks carry the mask string inline and need no download. So a wordlist attack in remote mode no longer requires pre-staging files on each agent; the first agent to run a chunk pulls the file on demand.
 
-**Resilience and limits.** If an agent disconnects mid-task, the control plane fails its in-flight chunks so the scheduler can retry them. Two limits to plan around in this release: the scheduler runs **one job and one chunk at a time** (it does not yet fan a single job across many agents in parallel), and **hybrid attacks (`-a 6`/`-a 7`, wordlist + mask together) are not fully wired** — pure wordlist (`-a 0`) and pure mask (`-a 3`) attacks are the supported paths.
+**Resilience and limits.** If an agent disconnects mid-task, the control plane fails its in-flight chunks so the scheduler can retry them. The scheduler runs **one job at a time but fans that job's chunks across the whole fleet in parallel** — it keeps as many chunks in flight as the connected agents advertise free slots, so adding agents speeds up a single job (per-job progress and ETA aggregate across the running chunks). It does not yet run several *different* jobs concurrently. One other limit to plan around: **hybrid attacks (`-a 6`/`-a 7`, wordlist + mask together) are not fully wired** — pure wordlist (`-a 0`) and pure mask (`-a 3`) attacks are the supported paths.
 
 ### Distributed quick start
 
@@ -260,7 +267,7 @@ When agents are connected (§7) they push their own device telemetry up the WebS
 
 **Health and readiness.** `GET /healthz` returns `ok` when the process is serving. `GET /metrics`, `GET /agents` and `GET /devices` are useful deeper liveness probes once the system is in use.
 
-**Scaling and current limits.** Version 1.0.4 is a single control plane with a single scheduler that processes one job and one chunk at a time; it does not yet parallelise one job across many agents. Uploaded wordlists and rules live on the control plane's `data_dir` and are now distributed to agents on demand — each agent fetches and caches the files a chunk needs (§7, *File distribution*). Hybrid attacks (`-a 6`/`-a 7`) are not fully wired yet. Plan capacity with those constraints in mind.
+**Scaling and current limits.** flamejob is a single control plane with a single scheduler. It processes one job at a time but parallelises that job across the fleet, keeping one chunk in flight per advertised agent slot; on the local runner, `[scheduler].local_parallelism` sets how many hashcat processes run at once (default 1). It does not yet run several different jobs concurrently. Uploaded wordlists and rules live on the control plane's `data_dir` and are distributed to agents on demand — each agent fetches and caches the files a chunk needs (§7, *File distribution*). Hybrid attacks (`-a 6`/`-a 7`) are not fully wired yet. Plan capacity with those constraints in mind.
 
 ## 11. Troubleshooting
 
@@ -379,10 +386,12 @@ Every route and the capability it requires. The authoritative, always-current co
 | `GET /healthz` | none |
 | `GET /metrics` | none |
 | `GET /openapi.json` | none |
+| `GET /docs` | none (interactive API reference) |
 | `POST /auth/login` | none |
 | `GET /auth/me` | any authenticated |
 | `GET /jobs` | `ViewJobs` |
 | `POST /jobs` | `SubmitJobs` |
+| `POST /jobs/clear` | `SubmitJobs` |
 | `GET /jobs/{id}` | `ViewJobs` |
 | `PATCH /jobs/{id}` | `SubmitJobs` |
 | `GET /jobs/{id}/tasks` | `ViewJobs` |
@@ -412,4 +421,14 @@ Every route and the capability it requires. The authoritative, always-current co
 
 **Config environment map.** Any key maps to `FJ_<SECTION>__<KEY>` (uppercase, `__` between levels): e.g. `FJ_SERVER__BIND`, `FJ_DATABASE__DSN`, `FJ_AUTH__JWT_SECRET`, `FJ_SCHEDULER__RUNNER`, `FJ_TELEMETRY__ENABLED`. See §5.
 
-**Further reading.** The architecture decision record and build spec live in the project workspace. Roadmap items not in 1.0.4: the web UI, LDAP/AD-mapped RBAC (Phase 4/5), job-level parallelism across agents, and hybrid attack modes (`-a 6`/`-a 7`).
+**Further reading.** The architecture decision record and build spec live in the project workspace. Roadmap items not yet shipped: LDAP/AD-mapped RBAC (Phase 4/5), running several different jobs concurrently (single-job parallelism across agents is done — §13, §7), and hybrid attack modes (`-a 6`/`-a 7`).
+
+## 13. Web dashboard
+
+flamejob ships a browser dashboard alongside the TUI. It is a static single-page app that calls the same API and shows the same metrics, gated by the signed-in user's capabilities — so each role sees exactly what it is allowed to (viewers and operators get jobs, chunk breakdowns and device/agent panels; operators also get job controls and "clear finished"; admins get the user- and agent-management forms). The logged-in username and a log-out button sit in the upper-right, next to a light/dark theme toggle.
+
+**Where it runs.** A separate listener, configured under `[web]` (default `0.0.0.0:9443`). Set `tls_cert` and `tls_key` to serve it over HTTPS; leave them unset for plain HTTP. The dashboard calls the API on its existing port (`[server].bind`, default `:8443`), which now sends CORS headers so the browser can reach it cross-origin; bearer-token auth still gates every protected route. Point the browser at the API elsewhere with `[web].api_base` (e.g. behind a reverse proxy), or override it on the sign-in screen.
+
+> **Mixed content:** if you serve the dashboard over HTTPS, the API must also be reachable over HTTPS (front it with TLS or a proxy, per §7) — a browser will block an HTTPS page calling an `http://` API.
+
+**API reference.** The API is browseable at `GET /docs` (served on the API port): an interactive OpenAPI/RapiDoc view of every operation and schema, bound to `GET /openapi.json`. The dashboard links to it ("API docs"). The interactive reference loads its viewer from a CDN, so it needs outbound internet in the browser; the raw `GET /openapi.json` is always available offline.
