@@ -29,6 +29,14 @@ Makes wordlist jobs work end to end, including in distributed mode.
   path to a local wordlist file (which it uploads for you), instead of only a
   UUID; a value that is neither is rejected with a clear message.
 
+### Documentation
+- Synced the Administrator, Operator and Viewer guides to 1.0.3: removed the
+  obsolete "wordlists must already be present on the agent" caveat and documented
+  on-demand file distribution and the `GET /agent/files/{id}` endpoint; documented
+  `fj job submit --mask` and the `--wordlist` id-or-path behaviour; and added a
+  complete command/subcommand reference for every binary (`flamejobd`, `fj`,
+  `flamejob-tui`, `fj-agent`) to the Administrator and Operator guides.
+
 ## [1.0.2] - 2026-11-20
 
 Packaging fix so a plain install produces a working server.

@@ -4,7 +4,7 @@
 
 This guide is for **operators** — the people who load hashes, submit cracking jobs, and watch them run. As an operator you can do everything involved in getting work through flamejob: create hashlists and import hashes, upload wordlists / rules / masks, submit and control jobs, read recovered plaintext, and watch job and device stats. You cannot manage user accounts or the worker fleet — those are admin tasks (see the **Administrator Guide**), and strictly read-only users have their own **Viewer Guide**.
 
-You'll work through the `fj` command-line client and the `flamejob-tui` dashboard, both talking to a `flamejobd` control plane an admin has already deployed. This guide documents flamejob **1.0.2**.
+You'll work through the `fj` command-line client and the `flamejob-tui` dashboard, both talking to a `flamejobd` control plane an admin has already deployed. This guide documents flamejob **1.0.3**.
 
 ## 2. Concepts primer
 
@@ -72,26 +72,34 @@ Upload the wordlists, rules and masks your attacks will use. Set `--kind` to `wo
 fj file add rockyou.txt --kind wordlist
 ```
 
-It prints the file's id — you'll pass that to `fj job submit --wordlist`. List and remove files with `fj file ls` and `fj file rm <file-id>`.
+It prints the file's id. The default `--kind` is `other`, so **remember `--kind wordlist`** for a wordlist (likewise `rule` or `mask`); the kind is how the control plane and agents know what the file is. You can pass the printed id to `fj job submit --wordlist`, or skip this step entirely and give `fj job submit --wordlist` a local path — it uploads the file for you (see §6). List and remove files with `fj file ls` and `fj file rm <file-id>`.
 
-**Remote-mode caveat.** If your deployment runs jobs on remote agents, wordlist and rule files are *not* shipped to the agents automatically — the file must already be present on the agent host. Mask attacks don't have this limitation. Ask your admin which mode the deployment uses.
+**Remote mode.** As of 1.0.3, if your deployment runs jobs on remote agents, wordlist and rule files are distributed to the agents automatically — an agent fetches the files a job needs from the control plane the first time it runs a chunk and caches them. There is nothing to pre-stage. (Hybrid attacks, hashcat `-a 6`/`-a 7`, aren't wired up yet; stick to wordlist and mask attacks.)
 
 ## 6. Submitting & running jobs
 
 *Requires the `SubmitJobs` capability.*
 
-**Submit a job** against a hashlist:
+**Submit a wordlist job** against a hashlist:
 
 ```
 fj job submit --hashlist <hashlist-id> --name corp-run-1 \
-              --attack-mode 0 --wordlist <file-id> --priority 100
+              --attack-mode 0 --wordlist rockyou.txt --priority 100
+```
+
+**Submit a mask (brute-force) job** with `--mask` and `-a 3`:
+
+```
+fj job submit --hashlist <hashlist-id> --name corp-mask-1 \
+              --attack-mode 3 --mask '?a?a?a?a?a?a'
 ```
 
 - `--attack-mode` / `-a` is hashcat's attack number (`0` wordlist, `3` mask; default `0`).
-- `--wordlist` takes a file id (from `fj file add`); omit it for attacks that don't need one.
+- `--wordlist` takes **either** a file id (from `fj file add`) **or** a path to a local wordlist, which `fj` uploads for you before submitting. A value that's neither a known id nor an existing file is rejected. Omit it for attacks that don't need a wordlist.
+- `--mask` takes a hashcat mask string (e.g. `?a?a?a?a`) for a mask attack; pair it with `-a 3`.
 - `--priority` orders the queue — lower runs first; default `100`.
 
-The command prints the new job id and the job enters the queue. (The CLI's submit is built for wordlist attacks; rules, masks and extra hashcat arguments exist in the API's job config but aren't exposed as `fj` flags in 1.0.2.)
+The command prints the new job id and the job enters the queue. (Rule files and extra hashcat arguments exist in the API's job config but aren't exposed as `fj` flags in 1.0.3 — wordlist and mask attacks are the supported CLI paths.)
 
 **Control a running job:**
 
@@ -138,26 +146,47 @@ The TUI's devices panel is your main view of GPU and host health. The underlying
 
 ## 10. CLI command reference
 
-Global flags, usable on any command: `--server <url>` (or `FJ_SERVER`), and `--json` for raw JSON output.
+This is the complete `fj` surface for an operator. **Global flags**, valid on every command: `--server <url>` (or the `FJ_SERVER` environment variable; default `http://localhost:8443`) and `--json` for raw JSON output instead of the formatted text. The login token is cached at `~/.config/flamejob/token` and reused by later commands and the TUI.
+
+**Identity**
 
 | Command | Purpose |
 | --- | --- |
-| `fj login --user <u> --password <p>` | Authenticate; cache the token. |
-| `fj whoami` | Show current identity and roles. |
+| `fj login --user <u> --password <p>` | Authenticate; cache the token; print your roles. Both flags required. |
+| `fj whoami` | Show the current identity and roles. |
 | `fj logout` | Forget the cached token. |
-| `fj job ls` | List jobs with state and priority. |
-| `fj job show <id>` | Full job detail (JSON). |
-| `fj job submit --hashlist <id> --name <n> [-a <mode>] [--wordlist <id>] [--priority <n>]` | Submit a job. |
-| `fj job {pause,resume,cancel} <id>` | Change job run state. |
-| `fj job prio <id> <priority>` | Re-prioritise a job. |
-| `fj job watch <id>` | Follow job / task events (SSE). |
+
+**Jobs** (`fj job …`)
+
+| Command | Purpose |
+| --- | --- |
+| `fj job ls` | List jobs with id, name, state and priority. |
+| `fj job show <id>` | Full job detail (always JSON). |
+| `fj job submit --hashlist <id> --name <n> [-a <mode>] [--wordlist <id\|path>] [--mask <str>] [--priority <n>]` | Submit a job (see §6 for the flags). `--hashlist` and `--name` are required; `-a` defaults to `0`, `--priority` to `100`. |
+| `fj job pause <id>` | Pause a running job (resumable). |
+| `fj job resume <id>` | Return a paused job to the queue. |
+| `fj job cancel <id>` | Cancel a job (terminal). |
+| `fj job prio <id> <priority>` | Re-prioritise a job; lower runs first. |
+| `fj job watch <id>` | Follow that job's events over SSE until Ctrl-C. |
+
+**Hashlists** (`fj hashlist …`)
+
+| Command | Purpose |
+| --- | --- |
 | `fj hashlist ls` | List hashlists with cracked / total. |
-| `fj hashlist create --name <n> -m <type>` | Create a hashlist. |
-| `fj hashlist import <id> <file>` | Import hashes from a file. |
-| `fj hashlist cracked <id>` | Show recovered plaintext (needs `ViewPlaintext`). |
-| `fj file add <path> [--kind {wordlist,rule,mask,other}]` | Upload a file. |
-| `fj file ls` | List files. |
+| `fj hashlist create --name <n> -m <type>` | Create a hashlist; `-m` is hashcat's hash-type number. Prints the new id. |
+| `fj hashlist import <id> <file>` | Import hashes from a file, one per line (blank lines skipped); reports the new total. |
+| `fj hashlist cracked <id>` | Show recovered `hash -> plaintext` (needs `ViewPlaintext`). |
+
+**Files** (`fj file …`)
+
+| Command | Purpose |
+| --- | --- |
+| `fj file add <path> [--kind {wordlist,rule,mask,other}]` | Upload a file; prints its id. `--kind` defaults to `other` — set `wordlist` / `rule` / `mask` explicitly. |
+| `fj file ls` | List files with id, name, kind and size. |
 | `fj file rm <id>` | Delete a file. |
+
+The `flamejob-tui` dashboard keys are in §8. Admin-only tools (`flamejobd`, `fj-agent`) and their flags are in the **Administrator Guide**.
 
 ## 11. Troubleshooting
 
@@ -165,11 +194,11 @@ Global flags, usable on any command: `--server <url>` (or `FJ_SERVER`), and `--j
 - **Auth errors after a while** — your token expired (default 1 hour). Run `fj login` again.
 - **A job sits in `queued`** — nothing is running it yet. In local mode the scheduler runs one job at a time, so an earlier or higher-priority job may be ahead of yours; in remote mode, no agent may be connected. Check with your admin if it never starts.
 - **No cracked results yet** — cracking may simply not have reached them. Watch progress with `fj job watch <id>` or the TUI; the `cracked / total` column in `fj hashlist ls` shows how far along the list is.
-- **A wordlist job does nothing on an agent** — in remote mode the wordlist must already be present on the agent host (see §5).
+- **A remote job errors immediately with a file problem** — in remote mode the agent fetches wordlist/rule files from the control plane on demand (1.0.3). If a chunk fails fetching one, confirm the file still exists (`fj file ls`) and that your admin's agents can reach the control plane's address; a deleted or unreachable file is the usual cause.
 
 ## 12. Reference & appendices
 
-**Attack modes** (hashcat `-a`, passed as `--attack-mode`): `0` dictionary (wordlist), `1` combinator, `3` mask (brute-force), `6` hybrid wordlist + mask, `7` hybrid mask + wordlist. The `fj` submit flow is built around wordlist (`0`) and mask (`3`) attacks.
+**Attack modes** (hashcat `-a`, passed as `--attack-mode`): `0` dictionary (wordlist), `1` combinator, `3` mask (brute-force), `6` hybrid wordlist + mask, `7` hybrid mask + wordlist. The `fj` submit flow supports wordlist (`0`, via `--wordlist`) and mask (`3`, via `--mask`) attacks; hybrid modes aren't wired up in 1.0.3.
 
 **Job states.** `queued` → `assigned` → `running`; `paused` is resumable; terminal states are `completed`, `exhausted`, `cancelled`, `error`. A job finishes early once every hash is cracked. Task (chunk) states: `pending`, `running`, `paused`, `done`, `failed`.
 
