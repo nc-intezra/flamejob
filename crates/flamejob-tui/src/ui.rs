@@ -318,12 +318,20 @@ fn devices(f: &mut Frame, area: Rect, d: &Dashboard) {
         return;
     }
 
-    let header = Row::new(["DEVICE", "TEMP", "UTIL", "P-STATE", "CLOCK", "HASHRATE"])
-        .style(Style::default().fg(DIM).add_modifier(Modifier::BOLD));
+    let header = Row::new([
+        "DEVICE", "TEMP", "FAN", "UTIL", "P-STATE", "CLOCK", "HASHRATE",
+    ])
+    .style(Style::default().fg(DIM).add_modifier(Modifier::BOLD));
     let rows = d.devices.iter().map(|dev: &Device| {
         Row::new(vec![
             Cell::from(dev.name.clone()).style(Style::default().fg(INK)),
             Cell::from(format!("{}°C", dev.temp)).style(Style::default().fg(temp_color(dev.temp))),
+            Cell::from(if dev.fan > 0 {
+                format!("{}%", dev.fan)
+            } else {
+                "—".into()
+            })
+            .style(Style::default().fg(ACCENT)),
             Cell::from(progress_bar(dev.util as f64 / 100.0, 8, "running")),
             Cell::from(dev.pstate.clone()).style(Style::default().fg(ACCENT)),
             Cell::from(if dev.clock_mhz > 0 {
@@ -336,9 +344,10 @@ fn devices(f: &mut Frame, area: Rect, d: &Dashboard) {
         ])
     });
     let widths = [
-        Constraint::Min(14),
+        Constraint::Min(12),
         Constraint::Length(6),
-        Constraint::Length(13),
+        Constraint::Length(5),
+        Constraint::Length(11),
         Constraint::Length(7),
         Constraint::Length(9),
         Constraint::Length(11),

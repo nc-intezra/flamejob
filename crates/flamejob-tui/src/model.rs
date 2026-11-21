@@ -38,6 +38,7 @@ pub struct Device {
     pub mem_used: i32,
     pub mem_total: i32,
     pub pstate: String,
+    pub fan: i32,
     pub clock_mhz: i32,
     pub hashrate: i64,
 }
@@ -173,6 +174,7 @@ impl Dashboard {
                 mem_used: 22100,
                 mem_total: 24564,
                 pstate: "P2".into(),
+                fan: 62,
                 clock_mhz: 2520,
                 hashrate: 640_000_000,
             },
@@ -183,6 +185,7 @@ impl Dashboard {
                 mem_used: 21040,
                 mem_total: 24564,
                 pstate: "P2".into(),
+                fan: 58,
                 clock_mhz: 2490,
                 hashrate: 600_000_000,
             },

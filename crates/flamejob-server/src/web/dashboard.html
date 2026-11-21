@@ -10,6 +10,8 @@
     --bg:#18191e; --panel:#21232a; --panel2:#1d1f26; --ink:#cdd2dc; --dim:#787e8c;
     --accent:#61afef; --good:#98c379; --warn:#e5c07b; --bad:#e06c77; --busy:#e0a35e;
     --sel:#2d3240; --track:#373a44; --border:#2a2d36;
+    /* flame gradient behind the wordmark — dark theme: orange-red */
+    --flame1:#ff3b00; --flame2:#ffc400; --flame-opacity:.85;
     --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
     --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
   }
@@ -17,7 +19,20 @@
     --bg:#f4f6f9; --panel:#ffffff; --panel2:#eef1f5; --ink:#1f2530; --dim:#67707f;
     --accent:#2f74c0; --good:#3f8f4f; --warn:#b07611; --bad:#c0392b; --busy:#c47d18;
     --sel:#e6eef9; --track:#dde2ea; --border:#e0e4ea;
+    /* light theme flame: blue-to-purple */
+    --flame1:#2b5cff; --flame2:#8a2be2; --flame-opacity:.6;
   }
+  /* OLED: 100% black background with orange-fade text */
+  html[data-theme="oled"]{
+    --bg:#000000; --panel:#070707; --panel2:#0c0c0c; --ink:#ffa652; --dim:#9a5a2a;
+    --accent:#ff7a18; --good:#ffb703; --warn:#ffb300; --bad:#ff1f1f; --busy:#ff8c00;
+    --sel:#190d03; --track:#241206; --border:#1c1105;
+    /* OLED flame: brightly coloured orange-red */
+    --flame1:#ff2a00; --flame2:#ff9d00; --flame-opacity:1;
+  }
+  /* OLED: make hot cards pop against the black background. */
+  html[data-theme="oled"] .num.bad{font-weight:700;text-shadow:0 0 9px rgba(255,31,31,.85)}
+  html[data-theme="oled"] .num.warn{font-weight:700;text-shadow:0 0 7px rgba(255,179,0,.55)}
   *{box-sizing:border-box}
   html,body{margin:0;height:100%}
   body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.4}
@@ -30,8 +45,13 @@
   #app{display:none;flex-direction:column;height:100vh;padding:10px;gap:10px}
   header.bar{display:flex;align-items:center;justify-content:space-between;
     background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:8px 14px}
-  .brand{font-family:var(--mono);font-weight:700;color:var(--accent);font-size:16px}
-  .sub{color:var(--dim);margin-left:8px}
+  .brandwrap{position:relative;display:inline-block;vertical-align:middle}
+  /* Flame centred on the wordmark; the SVG gradient fades its tips to transparent
+     so it glows behind the letters instead of blending with their colour. */
+  .brandwrap .flame{position:absolute;left:50%;top:42%;transform:translate(-50%,-50%);
+    height:42px;width:118%;opacity:var(--flame-opacity);z-index:0;pointer-events:none}
+  .brand{position:relative;z-index:1;font-family:var(--mono);font-weight:700;color:var(--accent);font-size:16px}
+  .sub{color:var(--dim);margin-left:16px}
   .pill{margin-left:14px;font-size:12px}
   .pill.good{color:var(--good)} .pill.dim{color:var(--dim)}
   .right{display:flex;align-items:center;gap:14px}
@@ -42,17 +62,19 @@
     border-radius:8px;padding:5px 10px;font-size:12px}
   .iconbtn:hover{border-color:var(--accent);color:var(--accent)}
 
-  main{display:grid;grid-template-columns:1.5fr 1fr;grid-template-rows:1fr auto;gap:10px;flex:1;min-height:0}
+  /* Stacked regions: top (Jobs | Job detail, detail is tall), mid (Submit | Devices,
+     each half-width), then full-width Agents / Admin. */
+  main{display:flex;flex-direction:column;gap:10px;flex:1;min-height:0;overflow:auto}
+  .region{display:grid;gap:10px;min-height:0}
+  .region-top{grid-template-columns:1.5fr 1fr;flex:2 1 0}
+  .region-mid{grid-template-columns:1fr 1fr;flex:1 1 0}
+  .region-mid.one{grid-template-columns:1fr}
   .panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;display:flex;flex-direction:column;min-height:0;overflow:hidden}
   .panel > .head{display:flex;align-items:center;justify-content:space-between;
     padding:8px 12px;border-bottom:1px solid var(--border);font-weight:600}
   .panel > .head .t{letter-spacing:.02em}
   .panel > .body{padding:6px 4px;overflow:auto;min-height:0}
-  #jobsPanel{grid-row:1 / span 2}
-  .rightcol{display:flex;flex-direction:column;gap:10px;min-height:0}
-  #detailPanel{flex:1.1;min-height:0}
-  #devicesPanel{flex:1;min-height:0}
-  #agentsPanel,#adminPanel,#hashlistsPanel{min-height:0}
+  #agentsPanel,#adminPanel{flex:0 0 auto;max-height:30vh}
 
   table{width:100%;border-collapse:collapse;font-size:13px}
   th{position:sticky;top:0;background:var(--panel);text-align:left;color:var(--dim);
@@ -89,15 +111,21 @@
   .cracked td.p{color:var(--good);font-weight:600;user-select:all}
 
   /* ---- submit-job form ---- */
-  .drop{border:2px dashed var(--border);border-radius:10px;padding:16px;text-align:center;
-    color:var(--dim);cursor:pointer;transition:border-color .15s,color .15s}
+  .drop{border:2px dashed var(--border);border-radius:8px;padding:10px;text-align:center;
+    color:var(--dim);cursor:pointer;font-size:12px;transition:border-color .15s,color .15s}
   .drop.hover,.drop.has{border-color:var(--accent);color:var(--ink)}
-  .submit-grid{display:flex;flex-wrap:wrap;gap:14px;padding:10px 12px;align-items:flex-end}
-  .fld{display:flex;flex-direction:column;gap:4px}
-  .fld label{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+  .drop .det{display:block;color:var(--accent);font-size:11px;margin-top:3px}
+  /* compact two-column field grid so the half-width panel stays ergonomic */
+  .submit-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 10px;padding:8px 10px;align-items:end}
+  .fld{display:flex;flex-direction:column;gap:3px;min-width:0}
+  .fld.wide{grid-column:1 / -1}
+  .fld label{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}
   .fld input,.fld select{background:var(--panel2);border:1px solid var(--border);color:var(--ink);
-    border-radius:6px;padding:7px 9px;font-size:13px;font-family:var(--mono);min-width:150px}
-  .submit-grid .wide{flex:1;min-width:220px}
+    border-radius:6px;padding:6px 8px;font-size:12px;font-family:var(--mono);width:100%;min-width:0}
+  button.go{background:var(--accent);border:none;color:#0c1016;border-radius:6px;padding:7px 12px;font-size:12px;font-weight:600}
+  button.go:hover{filter:brightness(1.1)}
+  button.go:disabled{opacity:.6;cursor:default}
+  .fld .go{width:100%}
 
   .bar-wrap{display:flex;align-items:center;gap:8px}
   .bar-track{flex:1;height:8px;background:var(--track);border-radius:5px;overflow:hidden;min-width:60px}
@@ -173,7 +201,23 @@
 <div id="app">
   <header class="bar">
     <div>
-      <span class="brand">flamejob</span>
+      <span class="brandwrap">
+        <svg class="flame" viewBox="0 0 124 34" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <defs>
+            <linearGradient id="flameGrad" x1="0" y1="1" x2="0" y2="0">
+              <stop offset="0" stop-color="var(--flame1)"/>
+              <stop offset="0.5" stop-color="var(--flame2)" stop-opacity="0.9"/>
+              <stop offset="1" stop-color="var(--flame2)" stop-opacity="0"/>
+            </linearGradient>
+          </defs>
+          <g fill="url(#flameGrad)">
+            <path d="M62 2c7 9 3 13 7 18 3-3 3-7 2-10 6 6 11 14 11 21 0 11-9 19-20 19S42 42 42 31c0-8 6-14 11-20 0 5 1 9 4 11 2-7-3-13 5-20z"/>
+            <path d="M30 12c4 4 3 8 5 11 2-2 2-5 1-7 4 5 7 10 7 15 0 7-6 12-13 12s-13-5-13-12c0-5 4-9 7-13 0 3 1 6 3 7 1-5-2-9 3-13z" opacity=".75"/>
+            <path d="M94 12c4 4 3 8 5 11 2-2 2-5 1-7 4 5 7 10 7 15 0 7-6 12-13 12s-13-5-13-12c0-5 4-9 7-13 0 3 1 6 3 7 1-5-2-9 3-13z" opacity=".75"/>
+          </g>
+        </svg>
+        <span class="brand">flamejob</span>
+      </span>
       <span class="sub">queue dashboard</span>
       <span class="pill good" id="cRunning">0 running</span>
       <span class="pill dim" id="cQueued">0 queued</span>
@@ -188,6 +232,7 @@
   </header>
 
   <main>
+    <div class="region region-top">
     <section class="panel" id="jobsPanel">
       <div class="head"><span class="t">Jobs</span><span class="ctl" id="jobsCtl"></span></div>
       <div class="body">
@@ -198,7 +243,6 @@
       </div>
     </section>
 
-    <div class="rightcol">
       <section class="panel" id="detailPanel">
         <div class="head"><span class="t" id="detailTitle">Job</span>
           <span class="tabs" id="detailTabs"></span>
@@ -216,22 +260,24 @@
         </div>
         <div class="agg" id="detailAgg"></div>
       </section>
+    </div>
+
+    <div class="region region-mid" id="regionMid">
+      <section class="panel" id="submitPanel" style="display:none">
+        <div class="head"><span class="t">Submit a job</span><span class="dim" id="submitNote"></span></div>
+        <div class="body" id="submitBody"></div>
+      </section>
 
       <section class="panel" id="devicesPanel">
         <div class="head"><span class="t">Devices</span><span class="dim" id="devNote"></span></div>
         <div class="body">
           <table id="devTable">
-            <thead><tr><th>Device</th><th>Temp</th><th>Util</th><th>P-State</th><th>Clock</th><th>Hashrate</th></tr></thead>
+            <thead><tr><th>Device</th><th>Temp</th><th>Fan</th><th>Util</th><th>P-State</th><th>Clock</th><th>Hashrate</th></tr></thead>
             <tbody id="devBody"></tbody>
           </table>
         </div>
       </section>
     </div>
-
-    <section class="panel" id="submitPanel" style="grid-column:1 / -1;display:none">
-      <div class="head"><span class="t">Submit a job</span><span class="dim" id="submitNote"></span></div>
-      <div class="body" id="submitBody"></div>
-    </section>
 
     <section class="panel" id="agentsPanel" style="grid-column:1 / -1;display:none">
       <div class="head"><span class="t">Agents</span><span class="dim" id="agNote"></span></div>
@@ -274,8 +320,14 @@ const ALL_ROLES = ["superadmin","admin","operator","viewer"];
 const S = { token:null, roles:[], caps:new Set(), user:"", selected:null, timer:null, detailView:"chunks", selJob:null };
 
 // ---- theme ----
-function applyTheme(t){ document.documentElement.setAttribute("data-theme", t==="light"?"light":"dark"); localStorage.setItem("fj_theme", t); }
-function toggleTheme(){ applyTheme(document.documentElement.getAttribute("data-theme")==="dark"?"light":"dark"); }
+const THEMES = ["dark","light","oled"];
+function applyTheme(t){
+  if(!THEMES.includes(t)) t="dark";
+  document.documentElement.setAttribute("data-theme", t);
+  localStorage.setItem("fj_theme", t);
+  for(const id of ["themeBtn","loginTheme"]){ const b=document.getElementById(id); if(b) b.textContent="◐ "+t; }
+}
+function toggleTheme(){ const cur=document.documentElement.getAttribute("data-theme")||"dark"; applyTheme(THEMES[(THEMES.indexOf(cur)+1)%THEMES.length]); }
 applyTheme(localStorage.getItem("fj_theme") || CFG.theme || "dark");
 document.getElementById("themeBtn").onclick = toggleTheme;
 document.getElementById("loginTheme").onclick = toggleTheme;
@@ -291,11 +343,31 @@ async function api(path, opts){
   if(S.token) h["Authorization"] = "Bearer " + S.token;
   const res = await fetch(apiBase() + path, Object.assign({}, opts, {headers:h}));
   if(res.status === 401){ logout(); throw new Error("unauthorized"); }
-  if(!res.ok){ throw new Error(path + " → " + res.status); }
+  if(!res.ok){
+    // Surface the server's problem+json detail so callers can explain the failure.
+    let detail = "";
+    try{ const j = await res.clone().json(); detail = j.detail || j.title || j.message || ""; }
+    catch{ try{ detail = (await res.text()).slice(0,200); }catch{} }
+    const e = new Error(detail || `${path} → ${res.status}`);
+    e.status = res.status; e.detail = detail; throw e;
+  }
   const ct = res.headers.get("content-type") || "";
   return ct.includes("json") ? res.json() : res.text();
 }
 const can = c => S.caps.has(c);
+
+// Turn an api() error into a short human explanation (detail shown as a tooltip).
+function explainError(err, ctx){
+  const d = err.detail || "";
+  switch(err.status){
+    case 400: return (ctx==="import" ? "Couldn't parse that hash file — check the hash-mode matches the format" : "Bad request") + (d?` (${d})`:"");
+    case 401: return "Session expired — sign in again";
+    case 403: return "Your role isn't allowed to do that";
+    case 404: return "Not found" + (d?` (${d})`:"");
+    case 413: return "File too large (8 GiB max)";
+    default:  return d || err.message || "Request failed";
+  }
+}
 
 // ---- formatting (mirrors the TUI helpers) ----
 function fmtSpeed(h){ h=+h||0; const f=h; if(h<=0)return "—";
@@ -366,6 +438,12 @@ function gatePanels(){
   const canSubmit = can("submit_jobs");
   document.getElementById("submitPanel").style.display = canSubmit ? "flex":"none";
   if(canSubmit) renderSubmit();
+  // The mid region holds Submit (left) + Devices (right); collapse to one column
+  // when only one of them is visible, and hide the whole region when neither is.
+  const midPanels = (canSubmit?1:0) + (showStats?1:0);
+  const mid = document.getElementById("regionMid");
+  mid.style.display = midPanels ? "grid" : "none";
+  mid.classList.toggle("one", midPanels === 1);
   // Jobs-panel controls: "Clear finished" purges terminal jobs (SubmitJobs).
   const jc=document.getElementById("jobsCtl");
   if(showJobs && can("submit_jobs")){
@@ -489,11 +567,12 @@ function renderChunks(tasks){
 function renderDevices(devs){
   document.getElementById("devNote").textContent = devs.length ? (devs.length+" device(s)") : "";
   const body=document.getElementById("devBody");
-  if(!devs.length){ body.innerHTML=`<tr><td colspan="6" class="empty">no devices sampled yet</td></tr>`; return; }
+  if(!devs.length){ body.innerHTML=`<tr><td colspan="7" class="empty">no devices sampled yet</td></tr>`; return; }
   body.innerHTML = devs.map(d=>{
     const tc = d.temp>=85?"bad":d.temp>=75?"warn":"good";
     return `<tr><td>${esc(d.name)}</td>
-      <td class="num ${tc}">${d.temp}°C</td>
+      <td class="num ${tc}">${d.temp>0?d.temp+"°C":"—"}</td>
+      <td class="num accent">${d.fan>0?d.fan+"%":"—"}</td>
       <td>${bar((+d.util||0)/100,"running")}</td>
       <td class="accent num">${esc(d.pstate||"—")}</td>
       <td class="num">${d.clock_mhz>0?d.clock_mhz+" MHz":"—"}</td>
@@ -589,11 +668,51 @@ function renderSubmit(){
     if(w) loadFileOptions(); };
   document.getElementById("submitJobBtn").onclick=submitJob;
 }
+// Guess the hashcat mode from a sample hash line, so a dropped file pre-selects
+// a mode instead of failing later with a generic error.
+function detectHashMode(line){
+  const s=(line||"").trim();
+  if(!s) return null;
+  const pref=[
+    [/^\$2[aby]?\$/,3200,"bcrypt"],
+    [/^\$6\$/,1800,"sha512crypt"],
+    [/^\$5\$/,7400,"sha256crypt"],
+    [/^\$1\$/,500,"md5crypt"],
+    [/^\$apr1\$/,1600,"Apache apr1"],
+    [/^\$P\$|^\$H\$/,400,"phpass"],
+    [/^\$krb5tgs\$/,13100,"Kerberos TGS-REP"],
+    [/^\$krb5asrep\$/,18200,"Kerberos AS-REP"],
+    [/^\{SSHA\}/,111,"SSHA"],
+  ];
+  for(const [re,m,lbl] of pref) if(re.test(s)) return {mode:m,label:lbl};
+  if(/^[^:\s]+::[^:]*:[0-9a-f]+:[0-9a-f]{32}:[0-9a-f]+/i.test(s)) return {mode:5600,label:"NetNTLMv2"};
+  if(/^[0-9a-f]{32}:[0-9a-f]{32}$/i.test(s)) return {mode:1000,label:"NTLM (pwdump)"};
+  if(/^[0-9a-f]+$/i.test(s)){
+    const L=s.length;
+    if(L===32) return {mode:0,label:"32-hex → MD5 (NTLM is -m 1000)"};
+    if(L===40) return {mode:100,label:"SHA1"};
+    if(L===64) return {mode:1400,label:"SHA2-256"};
+    if(L===128) return {mode:1700,label:"SHA2-512"};
+  }
+  return null;
+}
+// Apply a detected mode to the hash-mode control (selects it, or sets "Other").
+function applyDetectedMode(det){
+  if(!det) return;
+  const sel=document.getElementById("hashMode");
+  if([...sel.options].some(o=>o.value===String(det.mode))){ sel.value=String(det.mode); document.getElementById("modeOtherFld").style.display="none"; }
+  else { sel.value="other"; document.getElementById("modeOtherFld").style.display="flex"; document.getElementById("hashModeOther").value=det.mode; }
+}
 function takeFile(f){
   const r=new FileReader();
   r.onload=()=>{ SUBMIT_FILE={name:f.name, text:r.result};
+    const lines=r.result.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+    const det=detectHashMode(lines[0]);
+    applyDetectedMode(det);
     const d=document.getElementById("drop"); d.classList.add("has");
-    d.textContent = f.name+"  ("+(r.result.split(/\r?\n/).filter(Boolean).length)+" lines)"; };
+    const note = det ? `detected: -m ${det.mode} (${det.label})` : "couldn't autodetect — pick a hash-mode";
+    d.innerHTML = `${esc(f.name)}<span class="det">${lines.length} lines · ${note}</span>`;
+  };
   r.readAsText(f);
 }
 async function loadFileOptions(){
@@ -623,15 +742,23 @@ async function submitJob(){
     attack_mode=3; config.mask=mask;
   }
   const btn=document.getElementById("submitJobBtn"); btn.disabled=true; btn.textContent="Submitting…";
+  out.title="";
+  let step="create";
   try{
     const hl=await api("/hashlists",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:name+" hashes",hash_type:mode})});
+    step="import";
     await api("/hashlists/"+hl.id+"/hashes",{method:"POST",headers:{"Content-Type":"text/plain"},body:SUBMIT_FILE.text});
+    step="queue";
     const job=await api("/jobs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,hashlist_id:hl.id,attack_mode,config})});
     out.style.color="var(--good)"; out.textContent="Submitted job "+(job.name||job.id)+" to the queue.";
     SUBMIT_FILE={name:null,text:null};
     const d=document.getElementById("drop"); d.classList.remove("has"); d.textContent="Drop a hash file here, or click to choose";
     tick();
-  }catch(err){ out.style.color="var(--bad)"; out.textContent="Submit failed: "+err.message; }
+  }catch(err){
+    out.style.color="var(--bad)";
+    out.textContent = explainError(err, step);
+    out.title = err.detail || err.message || "";  // full detail on hover (space-saving tooltip)
+  }
   finally{ btn.disabled=false; btn.textContent="Submit to agents"; }
 }
 

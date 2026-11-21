@@ -4,7 +4,7 @@
 
 This guide is for **operators** — the people who load hashes, submit cracking jobs, and watch them run. As an operator you can do everything involved in getting work through flamejob: create hashlists and import hashes, upload wordlists / rules / masks, submit and control jobs, read recovered plaintext, and watch job and device stats. You cannot manage user accounts or the worker fleet — those are admin tasks (see the **Administrator Guide**), and strictly read-only users have their own **Viewer Guide**.
 
-You'll work through the `fj` command-line client and the `flamejob-tui` dashboard, both talking to a `flamejobd` control plane an admin has already deployed. This guide documents flamejob **1.0.6**. A browser dashboard is also available (ask your admin for its URL) — sign in with the same credentials to submit jobs by dropping in a hash file, watch the agent pool, and read cracked passwords; the TUI's agents panel and the dashboard both show each agent's status as a coloured dot (green = usable, gray = away, red = error, orange = near overloaded).
+You'll work through the `fj` command-line client and the `flamejob-tui` dashboard, both talking to a `flamejobd` control plane an admin has already deployed. This guide documents flamejob **1.1.0**. A browser dashboard is also available (ask your admin for its URL) — sign in with the same credentials to submit jobs by dropping in a hash file, watch the agent pool, and read cracked passwords; the TUI's agents panel and the dashboard both show each agent's status as a coloured dot (green = usable, gray = away, red = error, orange = near overloaded).
 
 ## 2. Concepts primer
 
@@ -143,7 +143,9 @@ Pausing and cancelling from the dashboard need the same `SubmitJobs` capability 
 
 *Requires the `ViewStats` capability (operators have it).*
 
-The TUI's devices panel is your main view of GPU and host health. The underlying data is also available from the API if you query it directly: `GET /devices` (current snapshot) and `GET /devices/{name}/history` (recent samples). They report temperature, utilisation, memory, power, clocks and hashrate for the control plane and any connected agents. For persistent dashboards, your admin can wire Grafana to the server's Prometheus metrics (see the Administrator Guide).
+The TUI's devices panel — and the browser dashboard's Devices panel — are your main view of GPU and host health. When an agent runs on an NVIDIA box, each GPU shows up as its own row (`{gpu-name}[{index}]`) beside that agent's CPU, with a dedicated **Fan** column alongside temperature, utilisation, P-state, clocks and hashrate; a `—` means the field wasn't reported (CPU rows, or a card that doesn't expose it). The underlying data is also available from the API if you query it directly: `GET /devices` (current snapshot) and `GET /devices/{name}/history` (recent samples). For persistent dashboards, your admin can wire Grafana to the server's Prometheus metrics (see the Administrator Guide).
+
+The browser dashboard has three themes, cycled with the **◐** button top-right: a dark default, a light theme, and an **OLED-black** theme (a true-black background with orange-fade text) for low-light rooms and OLED panels. Dropping a hash file into the submit panel now autodetects the hashcat `-m` mode from the file's first line and preselects it, so you only override it when the guess is wrong.
 
 ## 10. CLI command reference
 
@@ -199,7 +201,7 @@ The `flamejob-tui` dashboard keys are in §8. Admin-only tools (`flamejobd`, `fj
 
 ## 12. Reference & appendices
 
-**Attack modes** (hashcat `-a`, passed as `--attack-mode`): `0` dictionary (wordlist), `1` combinator, `3` mask (brute-force), `6` hybrid wordlist + mask, `7` hybrid mask + wordlist. The `fj` submit flow supports wordlist (`0`, via `--wordlist`, with optional `--rule` rule files) and mask / brute-force (`3`, via `--mask`) attacks; hybrid modes aren't wired up in 1.0.6.
+**Attack modes** (hashcat `-a`, passed as `--attack-mode`): `0` dictionary (wordlist), `1` combinator, `3` mask (brute-force), `6` hybrid wordlist + mask, `7` hybrid mask + wordlist. The `fj` submit flow supports wordlist (`0`, via `--wordlist`, with optional `--rule` rule files) and mask / brute-force (`3`, via `--mask`) attacks; hybrid modes aren't wired up in 1.1.0.
 
 **Job states.** `queued` → `assigned` → `running`; `paused` is resumable; terminal states are `completed`, `exhausted`, `cancelled`, `error`. A job finishes early once every hash is cracked. Task (chunk) states: `pending`, `running`, `paused`, `done`, `failed`.
 

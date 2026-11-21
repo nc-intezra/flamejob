@@ -68,6 +68,7 @@ pub async fn fetch_dashboard(
             mem_used: d.mem_used as i32,
             mem_total: d.mem_total as i32,
             pstate: d.pstate.clone(),
+            fan: d.fan,
             clock_mhz: d.clock_mhz,
             hashrate: d.hashrate,
         })

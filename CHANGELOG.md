@@ -4,6 +4,48 @@ All notable changes to flamejob are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-11-21
+
+Brings NVIDIA GPU telemetry and optional fan control to the agents, and reworks
+the browser dashboard: hash-mode autodetection, clearer errors, a denser layout,
+and an OLED-black theme with a themed flame wordmark.
+
+### Added
+- **NVIDIA GPU telemetry.** When `nvidia-smi` is on an agent's `PATH`, the agent
+  now auto-detects its GPUs at startup and reports per-card temperature, fan
+  speed, utilization, P-state, SM/memory clocks and power draw alongside its
+  hashrate. Each GPU appears as its own device row named `{gpu-name}[{index}]`
+  beside the host CPU, in both the TUI and web Devices panels. Opt out with
+  `--no-gpu-metrics` (env `FJ_AGENT_NO_GPU_METRICS`).
+- **GPU fan control (opt-in).** `--fan-control` (env `FJ_AGENT_FAN_CONTROL`,
+  off by default) uses `nvidia-settings` to disable the driver's automatic fan
+  control while a task runs and ramp each fan to hold the GPU inside 85–95 % of
+  its rated (slowdown) temperature, handing control back to the driver when the
+  task finishes. Best-effort: needs an X display and a Coolbits-permissive
+  driver, and is a silent no-op where unsupported.
+- **Fan column** in the TUI and web Devices tables.
+- **Hash-mode autodetection.** Dropping a hash file into the web "Submit a job"
+  panel now guesses the hashcat `-m` mode from the file's first line (bcrypt,
+  sha-crypt variants, phpass, Kerberos, NetNTLMv2, NTLM pwdump, and bare hex by
+  length) and preselects it, instead of leaving a wrong default to fail later.
+- **OLED-black theme.** A third dashboard theme (true-black background, orange-
+  fade text) joins dark and light; the theme button cycles all three and the
+  choice persists. A theme-aware flame graphic sits behind the "flamejob"
+  wordmark — orange-red on the dark/OLED themes, blue-to-purple on light.
+
+### Changed
+- **Denser submit + layout rework.** The "Submit a job" panel is now a compact
+  two-column grid at half width; the Devices panel moves up beside it; and the
+  job-detail ("Job — …") region is given roughly twice its former height.
+- Clearer web submit/import errors: the dashboard now surfaces the server's
+  problem detail (mapped to a short human message, full text on hover) and names
+  the step that failed, rather than showing a generic error.
+
+### Fixed
+- GPU metrics other than CPU temperature/load and hashrate were never collected
+  on the agent side; NVIDIA temperature, fan, and P-state (and the rest) now
+  populate as intended.
+
 ## [1.0.6] - 2026-11-21
 
 Runs many jobs across the agent fleet at once, adds browser job submission, live
@@ -228,6 +270,7 @@ fleet, all over one OpenAPI-described API.
   self-contained over the wire, while wordlist attacks assume the file is
   present on the agent.
 
+[1.1.0]: https://github.com/nc-intezra/flamejob/releases/tag/v1.1.0
 [1.0.6]: https://github.com/nc-intezra/flamejob/releases/tag/v1.0.6
 [1.0.5]: https://github.com/nc-intezra/flamejob/releases/tag/v1.0.5
 [1.0.4]: https://github.com/nc-intezra/flamejob/releases/tag/v1.0.4
