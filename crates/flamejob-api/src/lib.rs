@@ -153,6 +153,41 @@ pub struct DeviceView {
     pub hashrate: i64,
 }
 
+/// Request to mint a new API key.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ApiKeyCreate {
+    /// Human-readable label to recognise the key later.
+    pub name: String,
+    /// Days until the key expires. Omit for the default (365); `0` means the key
+    /// never expires and must be revoked to disable.
+    #[serde(default)]
+    pub expires_in_days: Option<i64>,
+}
+
+/// A key as listed to its owner — never includes the secret.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ApiKeyView {
+    pub id: Uuid,
+    pub name: String,
+    /// Non-secret display prefix, e.g. `fj_1a2b3c4d`.
+    pub prefix: String,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub revoked: bool,
+}
+
+/// Response to key creation — the only time the full secret is returned.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct ApiKeyCreated {
+    pub id: Uuid,
+    pub name: String,
+    pub prefix: String,
+    /// The full secret (`fj_…`). Shown once; store it now, it cannot be recovered.
+    pub key: String,
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
 /// One historical telemetry sample for a device, from `metric_samples`.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct DeviceSample {
@@ -203,9 +238,12 @@ impl Event {
 
 #[derive(OpenApi)]
 #[openapi(
+    // NOTE: `version` here is a placeholder; the server overrides it at serve
+    // time with the live crate version (see flamejob-server openapi::document),
+    // so the document served at /openapi.json always matches the release.
     info(
         title = "flamejob",
-        version = "1.0.0",
+        version = "1.2.0",
         description = "Distributed hashcat queue API"
     ),
     components(schemas(
@@ -221,6 +259,9 @@ impl Event {
         CrackedHash,
         FileView,
         UserCreate,
+        ApiKeyCreate,
+        ApiKeyView,
+        ApiKeyCreated,
         ClearedJobs,
         Problem,
         Event,

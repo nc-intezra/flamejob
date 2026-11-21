@@ -117,6 +117,7 @@ impl AgentHub {
                     recovered: 0,
                     eta: None,
                     state: TaskState::Failed,
+                    device_speeds: Vec::new(),
                 });
             }
         }
@@ -641,6 +642,7 @@ async fn handle_agent_msg(state: &AppState, agent_id: Uuid, agent_name: &str, ms
                         recovered,
                         eta: None,
                         state: parse_task_state(&st),
+                        device_speeds: Vec::new(),
                     })
                     .await;
             }
@@ -666,6 +668,7 @@ async fn handle_agent_msg(state: &AppState, agent_id: Uuid, agent_name: &str, ms
                         recovered: 0,
                         eta: None,
                         state: ts,
+                        device_speeds: Vec::new(),
                     })
                     .await;
             }
@@ -684,6 +687,7 @@ async fn handle_agent_msg(state: &AppState, agent_id: Uuid, agent_name: &str, ms
                             recovered: 0,
                             eta: None,
                             state: TaskState::Failed,
+                            device_speeds: Vec::new(),
                         })
                         .await;
                 }

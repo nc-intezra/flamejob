@@ -8,7 +8,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use flamejob_api::agent::{AgentMetric, AgentMsg, AgentTask, CrackedItem, ServerMsg};
-use flamejob_core::{RunHandle, Runner, RunnerTask, TaskState};
+use flamejob_core::{DeviceSpeed, RunHandle, Runner, RunnerTask, TaskState};
 use flamejob_runner::LocalRunner;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, Mutex};
@@ -441,12 +441,15 @@ async fn run_task(
             })
             .await
             .ok();
-        // Opportunistic host + GPU telemetry alongside progress.
-        let mut samples = vec![host_metric(&mut sys, u.speed)];
-        let gpu_samples = gpu::sample(&gpus).await;
+        // Opportunistic host + GPU telemetry alongside progress. hashcat reports
+        // a per-device speed breakdown; attribute each to its GPU row so the
+        // hashrate shows next to the card doing the work, not on the CPU row.
+        let mut gpu_samples = gpu::sample(&gpus).await;
+        let cpu_hashrate = assign_gpu_hashrates(&mut gpu_samples, &u.device_speeds, u.speed);
         if fan_control && !gpu_samples.is_empty() {
             gpu::apply_fan_curve(&gpus, &gpu_samples).await;
         }
+        let mut samples = vec![host_metric(&mut sys, cpu_hashrate)];
         samples.extend(gpu_samples);
         out_tx.send(AgentMsg::Metrics { samples }).await.ok();
         last = u.state;
@@ -504,6 +507,38 @@ fn runner_task(
     }
 }
 
+/// Attribute hashcat's per-device speeds to the GPU metric rows (matched by
+/// device order), returning the hashrate the host/CPU row should carry.
+///
+/// hashcat enumerates compute devices as ids 1..N; detected NVIDIA GPUs are
+/// ordered by index 0..N-1, so we zip them positionally. Speeds past the GPU
+/// count (e.g. a CPU OpenCL device) fall onto the host row, and when no GPUs
+/// were detected the whole total stays on the host row (CPU-only agents).
+fn assign_gpu_hashrates(
+    gpus: &mut [AgentMetric],
+    device_speeds: &[DeviceSpeed],
+    total: i64,
+) -> i64 {
+    if gpus.is_empty() {
+        return total;
+    }
+    if device_speeds.is_empty() {
+        // No per-device breakdown: a lone GPU must own the total; with several
+        // we can't attribute it, so leave it on the host row rather than guess.
+        if let [only] = gpus {
+            only.hashrate = total;
+            return 0;
+        }
+        return total;
+    }
+    let mut speeds: Vec<&DeviceSpeed> = device_speeds.iter().collect();
+    speeds.sort_by_key(|d| d.device_id);
+    for (g, s) in gpus.iter_mut().zip(speeds.iter()) {
+        g.hashrate = s.speed;
+    }
+    speeds.iter().skip(gpus.len()).map(|d| d.speed).sum()
+}
+
 fn host_metric(sys: &mut sysinfo::System, hashrate: i64) -> AgentMetric {
     sys.refresh_cpu_usage();
     sys.refresh_memory();
@@ -530,5 +565,79 @@ fn state_str(s: TaskState) -> &'static str {
         TaskState::Paused => "paused",
         TaskState::Done => "done",
         TaskState::Failed => "failed",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn gpu_row(name: &str) -> AgentMetric {
+        AgentMetric {
+            name: name.into(),
+            kind: "gpu".into(),
+            temp: 0,
+            util: 0,
+            mem_used: 0,
+            mem_total: 0,
+            pstate: String::new(),
+            power_w: 0,
+            fan: 0,
+            clock_mhz: 0,
+            mem_clock_mhz: 0,
+            hashrate: 0,
+        }
+    }
+
+    #[test]
+    fn attributes_each_device_speed_to_its_gpu() {
+        let mut gpus = vec![gpu_row("a[0]"), gpu_row("b[1]")];
+        // Deliberately out of order to check sort-by-device_id.
+        let speeds = vec![
+            DeviceSpeed {
+                device_id: 2,
+                speed: 800,
+            },
+            DeviceSpeed {
+                device_id: 1,
+                speed: 1200,
+            },
+        ];
+        let cpu = assign_gpu_hashrates(&mut gpus, &speeds, 2000);
+        assert_eq!(gpus[0].hashrate, 1200);
+        assert_eq!(gpus[1].hashrate, 800);
+        assert_eq!(cpu, 0, "no spare devices -> nothing on the host row");
+    }
+
+    #[test]
+    fn extra_compute_device_falls_onto_host() {
+        let mut gpus = vec![gpu_row("a[0]")];
+        let speeds = vec![
+            DeviceSpeed {
+                device_id: 1,
+                speed: 1000,
+            },
+            DeviceSpeed {
+                device_id: 2,
+                speed: 50,
+            }, // e.g. a CPU OpenCL device
+        ];
+        let cpu = assign_gpu_hashrates(&mut gpus, &speeds, 1050);
+        assert_eq!(gpus[0].hashrate, 1000);
+        assert_eq!(cpu, 50);
+    }
+
+    #[test]
+    fn cpu_only_agent_keeps_total_on_host() {
+        let mut none: Vec<AgentMetric> = Vec::new();
+        assert_eq!(assign_gpu_hashrates(&mut none, &[], 500), 500);
+    }
+
+    #[test]
+    fn single_gpu_without_breakdown_owns_total() {
+        let mut gpus = vec![gpu_row("a[0]")];
+        let cpu = assign_gpu_hashrates(&mut gpus, &[], 1234);
+        assert_eq!(gpus[0].hashrate, 1234);
+        assert_eq!(cpu, 0);
     }
 }

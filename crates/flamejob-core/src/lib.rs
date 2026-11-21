@@ -6,4 +6,4 @@ pub mod runner;
 
 pub use error::{Error, Result};
 pub use model::{roles_have, Capability, JobState, Role, TaskState};
-pub use runner::{RunHandle, Runner, RunnerTask, StatusSink, StatusUpdate};
+pub use runner::{DeviceSpeed, RunHandle, Runner, RunnerTask, StatusSink, StatusUpdate};

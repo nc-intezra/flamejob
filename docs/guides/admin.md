@@ -6,7 +6,7 @@ flamejob is a distributed hashcat job queue. A single control-plane service, `fl
 
 This guide is for the people who stand that system up and keep it running: the **superadmin** (the local break-glass account) and **admin** roles, plus anyone responsible for deployment, configuration, user and agent management, and monitoring. Running and watching jobs day to day is covered separately in the **Operator Guide** and the **Viewer Guide**.
 
-It documents flamejob **1.1.0**, which adds NVIDIA GPU telemetry (temperature, fan, P-state, clocks and power per card) with optional driver-level fan control on the agents, plus a reworked browser dashboard — hash-mode autodetection on dropped files, clearer submit errors, a denser layout, and an OLED-black theme. It builds on 1.0.x, which runs many jobs across many agents in parallel, offers browser job submission and a cracked-password view (§13), and shows live agent status. Directory-mapped (LDAP/AD) RBAC remains on the roadmap and is flagged as planned where it comes up.
+It documents flamejob **1.2.0**, which adds revocable **API keys** for programmatic access (§14) and attributes hashrate to each GPU. It builds on 1.1.x (NVIDIA GPU telemetry with optional driver-level fan control, plus a reworked dashboard — hash-mode autodetection, clearer errors, an OLED-black theme) and 1.0.x (many jobs across many agents in parallel, browser job submission, a cracked-password view (§13), and live agent status). Directory-mapped (LDAP/AD) RBAC remains on the roadmap and is flagged as planned where it comes up.
 
 ## 2. Concepts primer
 
@@ -51,11 +51,11 @@ There are four ways to run flamejob; the `.deb` packages are the recommended pat
 
 ```
 # control-plane host
-sudo apt install ./flamejob-server_1.1.0-1_amd64.deb \
-                 ./flamejob-cli_1.1.0-1_amd64.deb \
-                 ./flamejob-tui_1.1.0-1_amd64.deb
+sudo apt install ./flamejob-server_1.2.0-1_amd64.deb \
+                 ./flamejob-cli_1.2.0-1_amd64.deb \
+                 ./flamejob-tui_1.2.0-1_amd64.deb
 # a GPU worker
-sudo apt install ./flamejob-agent_1.1.0-1_amd64.deb
+sudo apt install ./flamejob-agent_1.2.0-1_amd64.deb
 ```
 
 Installing `flamejob-server` sets up a complete server: it creates the `flamejob` system user, generates `jwt.key` and `plain.key`, writes a default **local-mode** `/etc/flamejob/flamejob.toml` (only if one isn't already present, so upgrades keep your edits), installs the systemd unit, and **enables** the service. It does not *start* it — the database must be reachable first (see First boot). Edit the config for an external database or the remote runner before starting. `apt purge flamejob-server` removes the generated config and keys.
@@ -138,7 +138,7 @@ In practice: **admins manage people and agents but cannot run jobs or read crack
 
 **Creating users.** `POST /admin/users` (requires `ManageUsers`) takes a username, a password and a list of roles and creates a local account. The `fj` CLI handles login and identity (`fj login`, `fj whoami`) but does not wrap user creation — call the endpoint directly (for example with `curl` and an admin token) or from your own tooling.
 
-**The break-glass superadmin.** The `superadmin` seeded on first boot (§4) is a local account for bootstrapping and emergencies. Once it exists, log in as it and create named admin and operator accounts rather than sharing it. Version 1.1.0 ships account *creation* but not a password-change or disable endpoint, so rotating the superadmin password — or disabling any account — is a database operation today (the `users` table carries a `disabled` flag that login honours). Treat that as the current rotation path until later releases add self-service.
+**The break-glass superadmin.** The `superadmin` seeded on first boot (§4) is a local account for bootstrapping and emergencies. Once it exists, log in as it and create named admin and operator accounts rather than sharing it. Version 1.2.0 ships account *creation* but not a password-change or disable endpoint, so rotating the superadmin password — or disabling any account — is a database operation today (the `users` table carries a `disabled` flag that login honours). Treat that as the current rotation path until later releases add self-service.
 
 **Directory integration (roadmap).** The `ManageDirectory` capability and the installer's directory prompt are placeholders for planned LDAP/AD-mapped RBAC (Phase 5). Until then, all roles come from the local `user_roles` table.
 
@@ -175,7 +175,7 @@ Log verbosity is set with `FJ_LOG`. Note the agent's default `--server` port (`8
 
 **Monitoring the fleet.** `GET /agents` (requires `ViewStats`) lists enrolled workers with status and timestamps. Status moves through `enrolled` (certificate issued, never connected), `online` (connected now), `offline` (disconnected), and `revoked` (certificate refused at connect).
 
-**Transport security.** The issued certificates are intended for mutual TLS, but in 1.1.0 the agent WebSocket (`/agent/stream`) and the agent file-download endpoint (`/agent/files/{id}`) both authenticate at the *application* layer — by certificate fingerprint — and do not themselves terminate transport TLS. For anything beyond a trusted network, terminate TLS in front of `flamejobd` with a rustls acceptor or a reverse proxy.
+**Transport security.** The issued certificates are intended for mutual TLS, but in 1.2.0 the agent WebSocket (`/agent/stream`) and the agent file-download endpoint (`/agent/files/{id}`) both authenticate at the *application* layer — by certificate fingerprint — and do not themselves terminate transport TLS. For anything beyond a trusted network, terminate TLS in front of `flamejobd` with a rustls acceptor or a reverse proxy.
 
 **File distribution.** As of 1.0.3 the control plane distributes wordlist and rule files to agents automatically. When a chunk task references a wordlist or rule (by file id), the agent fetches it from the control plane over `GET /agent/files/{id}` — authenticated with the same client certificate it uses on the WebSocket — and caches it under `{data_dir}/cache/{id}`, re-using the cached copy on later tasks. Mask attacks carry the mask string inline and need no download. So a wordlist attack in remote mode no longer requires pre-staging files on each agent; the first agent to run a chunk pulls the file on demand.
 
@@ -286,7 +286,7 @@ When agents are connected (§7) they push their own device telemetry up the WebS
 
 ### Command-line reference (all tools)
 
-flamejob ships four executables. `flamejobd`, `flamejob-tui` and `fj-agent` take no subcommands and are driven by flags and environment variables; `fj` is the subcommand-based client. Every documented flag and variable below is exhaustive for 1.1.0 — if a capability isn't listed here, it isn't exposed on the CLI yet.
+flamejob ships four executables. `flamejobd`, `flamejob-tui` and `fj-agent` take no subcommands and are driven by flags and environment variables; `fj` is the subcommand-based client. Every documented flag and variable below is exhaustive for 1.2.0 — if a capability isn't listed here, it isn't exposed on the CLI yet.
 
 #### `flamejobd` — control-plane server
 
@@ -332,7 +332,7 @@ Takes **no arguments or subcommands**. All behaviour comes from configuration (b
 - `--mask <str>` — a hashcat mask (e.g. `?a?a?a?a`) for a mask / brute-force attack; pair with `-a 3`. Masks travel inline to agents, so they need no file distribution.
 - `--rule <id|path>` — a rule file for a dictionary attack (`-a 0`): an uploaded file id (UUID) or a local path, uploaded for you as kind `rule`. Repeatable — pass `--rule` several times to apply rule files in order. Rules are distributed to remote agents like wordlists (§7, *File distribution*).
 - `--priority <int>` — queue order, lower first; default `100`.
-- *Not exposed as a flag in 1.1.0:* raw extra hashcat arguments exist in the API's job config but have no `fj` flag yet; submit those via the API directly if needed.
+- *Not exposed as a flag in 1.2.0:* raw extra hashcat arguments exist in the API's job config but have no `fj` flag yet; submit those via the API directly if needed.
 
 **Hashlists** (`fj hashlist <sub>`)
 
@@ -394,6 +394,9 @@ Every route and the capability it requires. The authoritative, always-current co
 | `GET /docs` | none (interactive API reference) |
 | `POST /auth/login` | none |
 | `GET /auth/me` | any authenticated |
+| `POST /auth/api-keys` | any authenticated (own keys) |
+| `GET /auth/api-keys` | any authenticated (own keys) |
+| `DELETE /auth/api-keys/{id}` | any authenticated (own keys) |
 | `GET /jobs` | `ViewJobs` |
 | `POST /jobs` | `SubmitJobs` |
 | `POST /jobs/clear` | `SubmitJobs` |
@@ -443,3 +446,21 @@ flamejob ships a browser dashboard alongside the TUI. It is a static single-page
 > **Mixed content:** if you serve the dashboard over HTTPS, the API must also be reachable over HTTPS (front it with TLS or a proxy, per §7) — a browser will block an HTTPS page calling an `http://` API.
 
 **API reference.** The API is browseable at `GET /docs` (served on the API port): an interactive OpenAPI/RapiDoc view of every operation and schema, bound to `GET /openapi.json`. The dashboard links to it ("API docs"). The interactive reference loads its viewer from a CDN, so it needs outbound internet in the browser; the raw `GET /openapi.json` is always available offline.
+
+## 14. API keys
+
+Users authenticate to the API with a short-lived JWT from `POST /auth/login`, which is ideal for the dashboard and TUI but awkward for scripts and CI. **API keys** are long-lived, revocable credentials a user mints for themselves to call the API programmatically.
+
+**Minting.** In the web dashboard, click your username (top-right) to open **API keys**, give the key a name, choose a lifetime (default **1 year**; `90 days`, `30 days`, or **No expiry** are also offered), and click *Generate key*. The full secret — `fj_` followed by 40 hex characters — is shown **once**; copy it then, because only its SHA-256 hash is stored and the plaintext can't be recovered. The same operations are available over the API: `POST /auth/api-keys` (`{"name": "...", "expires_in_days": 365}`; `0` means no expiry), `GET /auth/api-keys` (lists your keys; never returns secrets), and `DELETE /auth/api-keys/{id}` (revokes).
+
+**Using a key.** Send it as a bearer token, exactly where a login JWT would go:
+
+```bash
+curl -H "Authorization: Bearer fj_<your-key>" https://control-plane:8443/jobs
+```
+
+The server recognises the `fj_` prefix, looks the key up by hash, and authenticates the request **as the owning user with that user's current roles** — so a key is exactly as privileged as the person who created it, and role changes take effect immediately (roles are resolved live, not frozen into the key). Each use stamps the key's `last_used_at`.
+
+**Scope & lifecycle.** Keys are per-user: you can only see, create and revoke your own. A key stops working the instant it is revoked or expires, and — unlike JWTs — keys are **not** invalidated by rotating `[auth].jwt_secret`, since they're validated against the database rather than signed. There is no server-wide key list in 1.2.0; an admin who needs to cut off a departed user should disable that user (the `users.disabled` flag), which blocks their keys as well as their login.
+
+**Storage.** Keys live in the `api_keys` table (migration `0004`): `user_id`, `name`, a non-secret display `prefix`, the unique `key_hash` (hex SHA-256), `created_at`, nullable `expires_at` and `last_used_at`, and a `revoked` flag. Deleting a user cascades to their keys.
