@@ -30,6 +30,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **TUI agents panel** showing connected agents with the status dots above.
 - `JobView.hashlist_id` so clients can fetch a job's cracked results.
 
+### Changed
+- **Hash import limit raised to 8 GiB** (was axum's ~2 MB body default).
+  `POST /hashlists/{id}/hashes` now streams the request body line-by-line and
+  inserts in batched transactions, so large hashlists import without buffering
+  the whole upload in memory — mirroring the wordlist upload change in 1.0.3.
+
 ## [1.0.5] - 2026-11-21
 
 Adds a browser dashboard and a browseable OpenAPI reference, parallelises a

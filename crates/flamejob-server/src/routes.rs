@@ -1,3 +1,4 @@
+use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, State};
 use axum::http::{HeaderValue, Method, StatusCode};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
@@ -588,17 +589,41 @@ async fn device_history(
     Ok(Json(out))
 }
 
+/// Maximum hash-import body, matching the wordlist upload cap (§7). The body is
+/// streamed line-by-line (never buffered whole), so a large hashlist imports
+/// without holding gigabytes in memory.
+const MAX_HASH_UPLOAD: usize = 8 * 1024 * 1024 * 1024; // 8 GiB
+/// Rows per INSERT (Postgres caps bind params at 65535; 2 per row).
+const HASH_INSERT_BATCH: usize = 1000;
+
+async fn insert_hash_batch(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    id: Uuid,
+    batch: &mut Vec<String>,
+) -> Result<(), sqlx::Error> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+    let mut qb = sqlx::QueryBuilder::new("INSERT INTO hashes (hashlist_id, hash) ");
+    qb.push_values(batch.iter(), |mut b, hash| {
+        b.push_bind(id).push_bind(hash);
+    });
+    qb.build().execute(&mut **tx).await?;
+    batch.clear();
+    Ok(())
+}
+
 #[utoipa::path(
     post, path = "/hashlists/{id}/hashes", tag = "hashlists", security(("bearer" = [])),
     params(("id" = Uuid, Path, description = "Hashlist id")),
-    request_body(content = String, content_type = "text/plain", description = "One hash per line"),
+    request_body(content = String, content_type = "text/plain", description = "One hash per line (up to 8 GiB)"),
     responses((status = 200, body = HashlistView))
 )]
 async fn import_hashes(
     State(state): State<AppState>,
     auth: AuthUser,
     Path(id): Path<Uuid>,
-    body: String,
+    body: Body,
 ) -> Result<Json<HashlistView>, AppError> {
     auth.require(Capability::Ingest)?;
     let hash_type: Option<i32> =
@@ -607,17 +632,48 @@ async fn import_hashes(
             .fetch_optional(&state.db)
             .await?;
     let hash_type = hash_type.ok_or_else(|| AppError::NotFound("hashlist not found".into()))?;
-    for line in body.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
+
+    // Stream the body, splitting on newlines and inserting in batched
+    // transactions. `pending` holds only the current partial line between chunks.
+    let mut tx = state.db.begin().await?;
+    let mut stream = body.into_data_stream();
+    let mut pending: Vec<u8> = Vec::new();
+    let mut batch: Vec<String> = Vec::with_capacity(HASH_INSERT_BATCH);
+    let mut total: usize = 0;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| AppError::BadRequest(e.to_string()))?;
+        total += chunk.len();
+        if total > MAX_HASH_UPLOAD {
+            return Err(AppError::BadRequest(
+                "hash upload exceeds 8 GiB limit".into(),
+            ));
         }
-        sqlx::query("INSERT INTO hashes (hashlist_id, hash) VALUES ($1, $2)")
-            .bind(id)
-            .bind(line)
-            .execute(&state.db)
-            .await?;
+        pending.extend_from_slice(&chunk);
+        let mut line_start = 0;
+        for i in 0..pending.len() {
+            if pending[i] == b'\n' {
+                let line = String::from_utf8_lossy(&pending[line_start..i]);
+                let line = line.trim();
+                if !line.is_empty() {
+                    batch.push(line.to_string());
+                }
+                line_start = i + 1;
+            }
+        }
+        pending.drain(..line_start); // keep only the trailing partial line
+        while batch.len() >= HASH_INSERT_BATCH {
+            let mut chunk_rows: Vec<String> = batch.drain(..HASH_INSERT_BATCH).collect();
+            insert_hash_batch(&mut tx, id, &mut chunk_rows).await?;
+        }
     }
+    // Final line without a trailing newline.
+    let tail = String::from_utf8_lossy(&pending);
+    let tail = tail.trim();
+    if !tail.is_empty() {
+        batch.push(tail.to_string());
+    }
+    insert_hash_batch(&mut tx, id, &mut batch).await?;
+    tx.commit().await?;
     let (total, cracked): (i64, i64) =
         sqlx::query_as("SELECT count(*), count(plain) FROM hashes WHERE hashlist_id = $1")
             .bind(id)
