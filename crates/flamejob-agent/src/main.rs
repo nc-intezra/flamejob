@@ -248,14 +248,18 @@ async fn ensure_file(server: &str, cert_pem: &str, data_dir: &Path, id: Uuid) ->
         .error_for_status()
         .context("download file status")?;
     let tmp = cache.join(format!("{id}.part"));
-    let mut out = tokio::fs::File::create(&tmp).await.context("create cache file")?;
+    let mut out = tokio::fs::File::create(&tmp)
+        .await
+        .context("create cache file")?;
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.context("read download chunk")?;
         out.write_all(&chunk).await.context("write cache file")?;
     }
     out.flush().await.ok();
-    tokio::fs::rename(&tmp, &dest).await.context("finalize cache file")?;
+    tokio::fs::rename(&tmp, &dest)
+        .await
+        .context("finalize cache file")?;
     Ok(dest)
 }
 
@@ -394,7 +398,12 @@ async fn run_task(
         .ok();
 }
 
-fn runner_task(task: &AgentTask, data_dir: &Path, primary: String, rules: Vec<String>) -> RunnerTask {
+fn runner_task(
+    task: &AgentTask,
+    data_dir: &Path,
+    primary: String,
+    rules: Vec<String>,
+) -> RunnerTask {
     let hash_file = data_dir
         .join("jobs")
         .join(format!("{}.hashes", task.task_id));

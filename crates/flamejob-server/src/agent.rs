@@ -14,7 +14,6 @@ use axum::extract::{Path as UrlPath, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::Json;
-use tokio_util::io::ReaderStream;
 use flamejob_api::agent::{
     AgentClaim, AgentClaimCreate, AgentInfo, AgentMetric, AgentMsg, AgentTask, EnrollRequest,
     EnrollResponse, ServerMsg,
@@ -27,6 +26,7 @@ use flamejob_core::{
 use futures_util::{SinkExt, StreamExt};
 use rand::Rng;
 use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
 use crate::auth::AuthUser;
