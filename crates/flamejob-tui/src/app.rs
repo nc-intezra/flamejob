@@ -73,6 +73,16 @@ pub async fn fetch_dashboard(
         })
         .collect();
     let telemetry_live = !devices.is_empty();
+    let agents = client
+        .list_agents()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|a| crate::model::Agent {
+            name: a.name,
+            status: a.status,
+        })
+        .collect();
     Ok(Dashboard {
         server: server.to_string(),
         now: chrono::Utc::now(),
@@ -80,6 +90,7 @@ pub async fn fetch_dashboard(
         selected,
         chunks,
         devices,
+        agents,
         telemetry_live,
         hide_finished,
         can_submit,

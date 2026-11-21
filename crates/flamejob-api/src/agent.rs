@@ -41,6 +41,9 @@ pub struct EnrollResponse {
 pub struct AgentInfo {
     pub id: Uuid,
     pub name: String,
+    /// Live status, one of: `online` (connected and usable), `away` (enrolled
+    /// but not currently connected), `error` (reported an error, or revoked),
+    /// or `busy` (a multi-slot agent that is fully loaded / near overloaded).
     pub status: String,
     pub enrolled_at: chrono::DateTime<chrono::Utc>,
     pub last_seen: Option<chrono::DateTime<chrono::Utc>>,

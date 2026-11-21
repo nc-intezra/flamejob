@@ -176,6 +176,16 @@ impl Client {
             .await?)
     }
 
+    pub async fn list_agents(&self) -> Result<Vec<flamejob_api::agent::AgentInfo>> {
+        Ok(self
+            .request(Method::GET, "/agents")
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+
     pub async fn device_history(&self, name: &str) -> Result<Vec<DeviceSample>> {
         let path = format!("/devices/{}/history", encode_segment(name));
         Ok(self

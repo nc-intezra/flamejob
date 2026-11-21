@@ -8,14 +8,14 @@
 <style>
   :root{
     --bg:#18191e; --panel:#21232a; --panel2:#1d1f26; --ink:#cdd2dc; --dim:#787e8c;
-    --accent:#61afef; --good:#98c379; --warn:#e5c07b; --bad:#e06c77;
+    --accent:#61afef; --good:#98c379; --warn:#e5c07b; --bad:#e06c77; --busy:#e0a35e;
     --sel:#2d3240; --track:#373a44; --border:#2a2d36;
     --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
     --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
   }
   html[data-theme="light"]{
     --bg:#f4f6f9; --panel:#ffffff; --panel2:#eef1f5; --ink:#1f2530; --dim:#67707f;
-    --accent:#2f74c0; --good:#3f8f4f; --warn:#b07611; --bad:#c0392b;
+    --accent:#2f74c0; --good:#3f8f4f; --warn:#b07611; --bad:#c0392b; --busy:#c47d18;
     --sel:#e6eef9; --track:#dde2ea; --border:#e0e4ea;
   }
   *{box-sizing:border-box}
@@ -69,6 +69,35 @@
   .s-queued,.s-assigned,.s-pending{color:var(--dim)}
   .s-paused,.s-exhausted{color:var(--warn)}
   .s-cancelled,.s-failed,.s-error{color:var(--bad)}
+
+  /* ---- agent status taxonomy (dot + styled name) ---- */
+  .ag{display:inline-flex;align-items:center;gap:7px;font-family:var(--mono)}
+  .ag .dot{width:9px;height:9px;border-radius:50%;flex:none}
+  .ag-online .dot{background:var(--good)} .ag-online .nm{color:var(--good);font-weight:700}
+  .ag-away   .dot{background:var(--dim)}  .ag-away   .nm{color:var(--dim);font-style:italic}
+  .ag-error  .dot{background:var(--bad)}  .ag-error  .nm{color:var(--bad);font-weight:700;text-decoration:underline}
+  .ag-busy   .dot{background:var(--busy)} .ag-busy   .nm{color:var(--busy);font-weight:700}
+
+  /* ---- detail view tabs + cracked list ---- */
+  .tabs{display:inline-flex;gap:4px}
+  .tabs button{background:transparent;border:1px solid var(--border);color:var(--dim);
+    border-radius:6px;padding:2px 9px;font-size:12px}
+  .tabs button.on{color:var(--accent);border-color:var(--accent)}
+  .cracked{font-family:var(--mono);font-size:12px;width:100%;border-collapse:collapse}
+  .cracked td{padding:4px 10px;border-top:1px solid var(--border)}
+  .cracked td.h{color:var(--dim);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .cracked td.p{color:var(--good);font-weight:600;user-select:all}
+
+  /* ---- submit-job form ---- */
+  .drop{border:2px dashed var(--border);border-radius:10px;padding:16px;text-align:center;
+    color:var(--dim);cursor:pointer;transition:border-color .15s,color .15s}
+  .drop.hover,.drop.has{border-color:var(--accent);color:var(--ink)}
+  .submit-grid{display:flex;flex-wrap:wrap;gap:14px;padding:10px 12px;align-items:flex-end}
+  .fld{display:flex;flex-direction:column;gap:4px}
+  .fld label{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+  .fld input,.fld select{background:var(--panel2);border:1px solid var(--border);color:var(--ink);
+    border-radius:6px;padding:7px 9px;font-size:13px;font-family:var(--mono);min-width:150px}
+  .submit-grid .wide{flex:1;min-width:220px}
 
   .bar-wrap{display:flex;align-items:center;gap:8px}
   .bar-track{flex:1;height:8px;background:var(--track);border-radius:5px;overflow:hidden;min-width:60px}
@@ -171,12 +200,18 @@
 
     <div class="rightcol">
       <section class="panel" id="detailPanel">
-        <div class="head"><span class="t" id="detailTitle">Job</span><span class="ctl" id="detailCtl"></span></div>
+        <div class="head"><span class="t" id="detailTitle">Job</span>
+          <span class="tabs" id="detailTabs"></span>
+          <span class="ctl" id="detailCtl"></span></div>
         <div class="summary" id="detailSummary"><span class="dim">select a job</span></div>
         <div class="body">
           <table id="chunksTable">
             <thead><tr><th>Chunk</th><th>Keyspace</th><th>Progress</th><th>Speed</th><th>State</th></tr></thead>
             <tbody id="chunksBody"></tbody>
+          </table>
+          <table class="cracked" id="crackedTable" style="display:none">
+            <thead><tr><th>Hash</th><th>Plaintext</th></tr></thead>
+            <tbody id="crackedBody"></tbody>
           </table>
         </div>
         <div class="agg" id="detailAgg"></div>
@@ -192,6 +227,11 @@
         </div>
       </section>
     </div>
+
+    <section class="panel" id="submitPanel" style="grid-column:1 / -1;display:none">
+      <div class="head"><span class="t">Submit a job</span><span class="dim" id="submitNote"></span></div>
+      <div class="body" id="submitBody"></div>
+    </section>
 
     <section class="panel" id="agentsPanel" style="grid-column:1 / -1;display:none">
       <div class="head"><span class="t">Agents</span><span class="dim" id="agNote"></span></div>
@@ -231,7 +271,7 @@ const ROLE_CAPS = {
 };
 const ALL_ROLES = ["superadmin","admin","operator","viewer"];
 
-const S = { token:null, roles:[], caps:new Set(), user:"", selected:null, timer:null };
+const S = { token:null, roles:[], caps:new Set(), user:"", selected:null, timer:null, detailView:"chunks", selJob:null };
 
 // ---- theme ----
 function applyTheme(t){ document.documentElement.setAttribute("data-theme", t==="light"?"light":"dark"); localStorage.setItem("fj_theme", t); }
@@ -322,6 +362,10 @@ function gatePanels(){
   const admin = can("manage_users") || can("manage_agents");
   document.getElementById("adminPanel").style.display = admin ? "flex":"none";
   if(admin) renderAdmin();
+  // Job submission area (Superadmin + Operator — SubmitJobs).
+  const canSubmit = can("submit_jobs");
+  document.getElementById("submitPanel").style.display = canSubmit ? "flex":"none";
+  if(canSubmit) renderSubmit();
   // Jobs-panel controls: "Clear finished" purges terminal jobs (SubmitJobs).
   const jc=document.getElementById("jobsCtl");
   if(showJobs && can("submit_jobs")){
@@ -344,7 +388,10 @@ async function tick(){
     if(can("view_jobs")) renderJobs(await api("/jobs"));
     if(can("view_stats")) renderDevices(await api("/devices"));
     if(can("view_stats")) renderAgents(await api("/agents"));
-    if(can("view_jobs") && S.selected) renderChunks(await api("/jobs/"+S.selected+"/tasks"));
+    if(can("view_jobs") && S.selected){
+      if(S.detailView==="cracked" && S.selJob) loadCracked(S.selJob.hashlist_id);
+      else renderChunks(await api("/jobs/"+S.selected+"/tasks"));
+    }
     document.getElementById("lastUpd").textContent = "updated " + new Date().toLocaleTimeString();
   }catch(err){ if(String(err.message)!=="unauthorized") flash("refresh error: "+err.message, true); }
 }
@@ -370,22 +417,49 @@ function renderJobs(jobs){
   if(S.selected){ const j=jobs.find(x=>x.id===S.selected); if(j) renderDetailSummary(j); }
 }
 
-function selectJob(id){ S.selected=id; renderJobs(JOBS);
-  const j=JOBS.find(x=>x.id===id); if(j) renderDetailSummary(j);
+function selectJob(id){ S.selected=id; S.detailView="chunks"; renderJobs(JOBS);
+  const j=JOBS.find(x=>x.id===id); if(j){ S.selJob=j; renderDetailSummary(j); }
+  showDetailView();
   api("/jobs/"+id+"/tasks").then(renderChunks).catch(()=>{}); }
 
 function renderDetailSummary(j){
+  S.selJob=j;
   document.getElementById("detailTitle").textContent = "Job · " + j.name;
   document.getElementById("detailSummary").innerHTML =
     `${stateEl(j.state)} <span class="num">${Math.round(j.progress*100)}%</span>`+
     `<span class="dim">· ${fmtSpeed(j.speed)}</span>`+
     `<span class="warn">· ETA ${fmtEta(j.est_completion)}</span>`+
     `<span class="accent">· ${j.cracked}/${j.total} cracked</span>`;
+  // view tabs: chunks always; cracked plaintext only with ViewPlaintext.
+  const tabs=document.getElementById("detailTabs");
+  let th = `<button data-v="chunks" class="${S.detailView==="chunks"?"on":""}">Chunks</button>`;
+  if(can("view_plaintext"))
+    th += `<button data-v="cracked" class="${S.detailView==="cracked"?"on":""}">Cracked (${j.cracked})</button>`;
+  tabs.innerHTML = th;
+  [...tabs.querySelectorAll("button")].forEach(b=>b.onclick=()=>{ S.detailView=b.getAttribute("data-v"); renderDetailSummary(j); showDetailView(); });
   const ctl=document.getElementById("detailCtl");
   if(can("submit_jobs")){
     ctl.innerHTML = `<button data-a="pause">pause</button><button data-a="resume">resume</button><button class="danger" data-a="cancel">cancel</button>`;
     [...ctl.querySelectorAll("button")].forEach(b=>b.onclick=()=>jobAction(j.id, b.getAttribute("data-a")));
   } else ctl.innerHTML="";
+}
+
+// Swap the detail body between the chunk table and the cracked-password list.
+function showDetailView(){
+  const cracked = S.detailView==="cracked";
+  document.getElementById("chunksTable").style.display = cracked ? "none":"table";
+  document.getElementById("crackedTable").style.display = cracked ? "table":"none";
+  document.getElementById("detailAgg").style.display = cracked ? "none":"block";
+  if(cracked && S.selJob) loadCracked(S.selJob.hashlist_id);
+}
+async function loadCracked(hashlistId){
+  try{ renderCracked(await api("/hashlists/"+hashlistId+"/cracked")); }
+  catch(err){ document.getElementById("crackedBody").innerHTML=`<tr><td colspan="2" class="empty">${esc(err.message)}</td></tr>`; }
+}
+function renderCracked(items){
+  const body=document.getElementById("crackedBody");
+  if(!items.length){ body.innerHTML=`<tr><td colspan="2" class="empty">no cracked passwords yet</td></tr>`; return; }
+  body.innerHTML = items.map(c=>`<tr><td class="h" title="${esc(c.hash)}">${esc(c.hash)}</td><td class="p">${esc(c.plain)}</td></tr>`).join("");
 }
 async function jobAction(id, a){ try{ await api("/jobs/"+id+"/"+a,{method:"POST"}); flash("job "+a+" requested"); tick(); }
   catch(err){ flash(a+" failed: "+err.message, true); } }
@@ -427,12 +501,19 @@ function renderDevices(devs){
   }).join("");
 }
 
+// Agent status dot + styled name. online=green bold, away=gray italic,
+// error=red bold underline, busy=orange bold (multi-slot agent near overload).
+function agentDot(status, name){
+  const cls = {online:"ag-online",away:"ag-away",error:"ag-error",busy:"ag-busy"}[status] || "ag-away";
+  return `<span class="ag ${cls}"><span class="dot"></span><span class="nm">${esc(name)}</span></span>`;
+}
 function renderAgents(agents){
-  document.getElementById("agNote").textContent = agents.length ? (agents.filter(a=>a.status==="online").length+" online / "+agents.length+" enrolled") : "";
+  const online = agents.filter(a=>a.status==="online"||a.status==="busy").length;
+  document.getElementById("agNote").textContent = agents.length ? (online+" usable / "+agents.length+" enrolled") : "";
   const body=document.getElementById("agBody");
   if(!agents.length){ body.innerHTML=`<tr><td colspan="4" class="empty">no agents enrolled</td></tr>`; return; }
   body.innerHTML = agents.map(a=>`<tr>
-    <td>${esc(a.name)}</td><td>${stateEl(a.status)}</td>
+    <td>${agentDot(a.status, a.name)}</td><td class="dim mono">${esc(a.status)}</td>
     <td class="dim num">${a.enrolled_at?new Date(a.enrolled_at).toLocaleString():"—"}</td>
     <td class="dim num">${a.last_seen?new Date(a.last_seen).toLocaleString():"—"}</td></tr>`).join("");
 }
@@ -466,6 +547,92 @@ function renderAdmin(){
       body:JSON.stringify({username:document.getElementById("nuUser").value,password:document.getElementById("nuPass").value,roles})});
       document.getElementById("userOut").textContent="user created"; }
     catch(err){ document.getElementById("userOut").textContent="error: "+err.message; } };
+}
+
+// ---- submit a job (drop a hash file, pick a hash-mode + attack) ----
+const HASH_MODES = [
+  [0,"MD5"],[100,"SHA1"],[1400,"SHA2-256"],[1700,"SHA2-512"],[1000,"NTLM"],[900,"MD4"],
+  [500,"md5crypt $1$"],[1800,"sha512crypt $6$"],[3200,"bcrypt $2*$"],[400,"phpass"],
+  [5600,"NetNTLMv2"],[1100,"DCC (MS Cache)"],[2100,"DCC2 (MS Cache 2)"],
+  [13100,"Kerberos TGS-REP"],[18200,"Kerberos AS-REP"],[22000,"WPA-PBKDF2 (PMKID/EAPOL)"],
+];
+let SUBMIT_FILE = {name:null, text:null};
+function renderSubmit(){
+  const b=document.getElementById("submitBody");
+  if(b.dataset.built) return; // build once; avoid clobbering a partly-filled form each tick
+  b.dataset.built="1";
+  const modeOpts = HASH_MODES.map(([m,n])=>`<option value="${m}">${m} — ${n}</option>`).join("")+`<option value="other">Other…</option>`;
+  b.innerHTML = `
+    <div class="drop" id="drop">Drop a hash file here, or click to choose<input type="file" id="hashFile" style="display:none"></div>
+    <div class="submit-grid">
+      <div class="fld wide"><label>Job name</label><input id="jobName" placeholder="(auto from filename)"></div>
+      <div class="fld"><label>Hash mode (-m)</label><select id="hashMode">${modeOpts}</select></div>
+      <div class="fld" id="modeOtherFld" style="display:none"><label>Custom -m</label><input id="hashModeOther" type="number" min="0" placeholder="e.g. 22100"></div>
+      <div class="fld"><label>Attack</label><select id="attack"><option value="mask">Mask / brute-force (-a 3)</option><option value="wordlist">Wordlist (-a 0)</option></select></div>
+      <div class="fld wide" id="maskFld"><label>Mask</label><input id="mask" value="?a?a?a?a?a?a" placeholder="?a?a?a?a"></div>
+      <div class="fld wide" id="wordlistFld" style="display:none"><label>Wordlist</label><select id="wordlist"></select></div>
+      <div class="fld" id="ruleFld" style="display:none"><label>Rule (optional)</label><select id="rule"><option value="">(none)</option></select></div>
+      <div class="fld"><label>&nbsp;</label><button class="go" id="submitJobBtn">Submit to agents</button></div>
+    </div>
+    <div class="result" id="submitOut"></div>`;
+  const drop=document.getElementById("drop"), file=document.getElementById("hashFile");
+  drop.onclick=()=>file.click();
+  drop.ondragover=e=>{e.preventDefault();drop.classList.add("hover");};
+  drop.ondragleave=()=>drop.classList.remove("hover");
+  drop.ondrop=e=>{e.preventDefault();drop.classList.remove("hover");if(e.dataTransfer.files[0])takeFile(e.dataTransfer.files[0]);};
+  file.onchange=()=>{ if(file.files[0]) takeFile(file.files[0]); };
+  document.getElementById("hashMode").onchange=e=>{ document.getElementById("modeOtherFld").style.display = e.target.value==="other"?"flex":"none"; };
+  document.getElementById("attack").onchange=e=>{ const w=e.target.value==="wordlist";
+    document.getElementById("maskFld").style.display=w?"none":"flex";
+    document.getElementById("wordlistFld").style.display=w?"flex":"none";
+    document.getElementById("ruleFld").style.display=w?"flex":"none";
+    if(w) loadFileOptions(); };
+  document.getElementById("submitJobBtn").onclick=submitJob;
+}
+function takeFile(f){
+  const r=new FileReader();
+  r.onload=()=>{ SUBMIT_FILE={name:f.name, text:r.result};
+    const d=document.getElementById("drop"); d.classList.add("has");
+    d.textContent = f.name+"  ("+(r.result.split(/\r?\n/).filter(Boolean).length)+" lines)"; };
+  r.readAsText(f);
+}
+async function loadFileOptions(){
+  try{ const files=await api("/files");
+    const wl=files.filter(f=>f.kind==="wordlist"), rl=files.filter(f=>f.kind==="rule");
+    const w=document.getElementById("wordlist"); const r=document.getElementById("rule");
+    w.innerHTML = wl.length?wl.map(f=>`<option value="${f.id}">${esc(f.name)}</option>`).join(""):`<option value="">(upload a wordlist first)</option>`;
+    r.innerHTML = `<option value="">(none)</option>`+rl.map(f=>`<option value="${f.id}">${esc(f.name)}</option>`).join("");
+  }catch(e){}
+}
+async function submitJob(){
+  const out=document.getElementById("submitOut"); out.style.color="var(--bad)";
+  if(!SUBMIT_FILE.text){ out.textContent="Choose a hash file first."; return; }
+  let mode=document.getElementById("hashMode").value;
+  if(mode==="other") mode=document.getElementById("hashModeOther").value;
+  mode=parseInt(mode,10); if(Number.isNaN(mode)){ out.textContent="Pick a hash mode."; return; }
+  const name=document.getElementById("jobName").value.trim() || SUBMIT_FILE.name || "web-job";
+  const attack=document.getElementById("attack").value;
+  let attack_mode, config={rule_file_ids:[], extra_args:[]};
+  if(attack==="wordlist"){
+    const wid=document.getElementById("wordlist").value;
+    if(!wid){ out.textContent="Pick a wordlist (or upload one via the API/CLI)."; return; }
+    attack_mode=0; config.wordlist_file_id=wid;
+    const rid=document.getElementById("rule").value; if(rid) config.rule_file_ids=[rid];
+  } else {
+    const mask=document.getElementById("mask").value.trim(); if(!mask){ out.textContent="Enter a mask."; return; }
+    attack_mode=3; config.mask=mask;
+  }
+  const btn=document.getElementById("submitJobBtn"); btn.disabled=true; btn.textContent="Submitting…";
+  try{
+    const hl=await api("/hashlists",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:name+" hashes",hash_type:mode})});
+    await api("/hashlists/"+hl.id+"/hashes",{method:"POST",headers:{"Content-Type":"text/plain"},body:SUBMIT_FILE.text});
+    const job=await api("/jobs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,hashlist_id:hl.id,attack_mode,config})});
+    out.style.color="var(--good)"; out.textContent="Submitted job "+(job.name||job.id)+" to the queue.";
+    SUBMIT_FILE={name:null,text:null};
+    const d=document.getElementById("drop"); d.classList.remove("has"); d.textContent="Drop a hash file here, or click to choose";
+    tick();
+  }catch(err){ out.style.color="var(--bad)"; out.textContent="Submit failed: "+err.message; }
+  finally{ btn.disabled=false; btn.textContent="Submit to agents"; }
 }
 
 // ---- resume a saved session ----

@@ -4,7 +4,7 @@
 
 This guide is for **operators** — the people who load hashes, submit cracking jobs, and watch them run. As an operator you can do everything involved in getting work through flamejob: create hashlists and import hashes, upload wordlists / rules / masks, submit and control jobs, read recovered plaintext, and watch job and device stats. You cannot manage user accounts or the worker fleet — those are admin tasks (see the **Administrator Guide**), and strictly read-only users have their own **Viewer Guide**.
 
-You'll work through the `fj` command-line client and the `flamejob-tui` dashboard, both talking to a `flamejobd` control plane an admin has already deployed. This guide documents flamejob **1.0.5**.
+You'll work through the `fj` command-line client and the `flamejob-tui` dashboard, both talking to a `flamejobd` control plane an admin has already deployed. This guide documents flamejob **1.0.5**. A browser dashboard is also available (ask your admin for its URL) — sign in with the same credentials to submit jobs by dropping in a hash file, watch the agent pool, and read cracked passwords; the TUI's agents panel and the dashboard both show each agent's status as a coloured dot (green = usable, gray = away, red = error, orange = near overloaded).
 
 ## 2. Concepts primer
 

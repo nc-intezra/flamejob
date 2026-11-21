@@ -24,6 +24,13 @@ pub struct ChunkRow {
 }
 
 #[derive(Clone)]
+pub struct Agent {
+    pub name: String,
+    /// online | away | error | busy (see flamejob_api::agent::AgentInfo).
+    pub status: String,
+}
+
+#[derive(Clone)]
 pub struct Device {
     pub name: String,
     pub temp: i32,
@@ -42,6 +49,7 @@ pub struct Dashboard {
     pub selected: usize,
     pub chunks: Vec<ChunkRow>,
     pub devices: Vec<Device>,
+    pub agents: Vec<Agent>,
     pub telemetry_live: bool,
     /// Finished jobs are hidden from the jobs list (local view filter).
     pub hide_finished: bool,
@@ -179,6 +187,24 @@ impl Dashboard {
                 hashrate: 600_000_000,
             },
         ];
+        let agents = vec![
+            Agent {
+                name: "gpu-rig-01".into(),
+                status: "online".into(),
+            },
+            Agent {
+                name: "gpu-rig-02".into(),
+                status: "busy".into(),
+            },
+            Agent {
+                name: "gpu-rig-03".into(),
+                status: "away".into(),
+            },
+            Agent {
+                name: "gpu-rig-04".into(),
+                status: "error".into(),
+            },
+        ];
         let total_jobs = jobs.len();
         Dashboard {
             server: "https://crack01.lab:8443".into(),
@@ -187,6 +213,7 @@ impl Dashboard {
             selected: 0,
             chunks,
             devices,
+            agents,
             telemetry_live: false,
             hide_finished: false,
             can_submit: true,
