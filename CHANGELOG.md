@@ -4,6 +4,21 @@ All notable changes to flamejob are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3] - 2026-11-21
+
+Fixes for uploading and submitting wordlist jobs.
+
+### Fixed
+- Uploading a real wordlist no longer fails with a broken pipe: the `/files`
+  endpoint's request-body limit is lifted to 8 GiB and the upload is streamed to
+  disk, so large wordlists (e.g. rockyou.txt) upload without being buffered in
+  memory.
+
+### Changed
+- `fj job submit --wordlist` now accepts either an existing file id (UUID) or a
+  path to a local wordlist file (which it uploads for you), instead of only a
+  UUID; a value that is neither is rejected with a clear message.
+
 ## [1.0.2] - 2026-11-20
 
 Packaging fix so a plain install produces a working server.
@@ -97,6 +112,7 @@ fleet, all over one OpenAPI-described API.
   self-contained over the wire, while wordlist attacks assume the file is
   present on the agent.
 
+[1.0.3]: https://github.com/nc-intezra/flamejob/releases/tag/v1.0.3
 [1.0.2]: https://github.com/nc-intezra/flamejob/releases/tag/v1.0.2
 [1.0.1]: https://github.com/nc-intezra/flamejob/releases/tag/v1.0.1
 [1.0.0]: https://github.com/nc-intezra/flamejob/releases/tag/v1.0.0
