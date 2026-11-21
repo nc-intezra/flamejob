@@ -6,7 +6,7 @@ flamejob is a distributed hashcat job queue. A single control-plane service, `fl
 
 This guide is for the people who stand that system up and keep it running: the **superadmin** (the local break-glass account) and **admin** roles, plus anyone responsible for deployment, configuration, user and agent management, and monitoring. Running and watching jobs day to day is covered separately in the **Operator Guide** and the **Viewer Guide**.
 
-It documents flamejob **1.0.3**. A web UI and directory-mapped (LDAP/AD) RBAC are on the roadmap but are not part of this release; where they come up, they are flagged as planned.
+It documents flamejob **1.0.4**. A web UI and directory-mapped (LDAP/AD) RBAC are on the roadmap but are not part of this release; where they come up, they are flagged as planned.
 
 ## 2. Concepts primer
 
@@ -51,14 +51,16 @@ There are four ways to run flamejob; the `.deb` packages are the recommended pat
 
 ```
 # control-plane host
-sudo apt install ./flamejob-server_1.0.3-1_amd64.deb \
-                 ./flamejob-cli_1.0.3-1_amd64.deb \
-                 ./flamejob-tui_1.0.3-1_amd64.deb
+sudo apt install ./flamejob-server_1.0.4-1_amd64.deb \
+                 ./flamejob-cli_1.0.4-1_amd64.deb \
+                 ./flamejob-tui_1.0.4-1_amd64.deb
 # a GPU worker
-sudo apt install ./flamejob-agent_1.0.3-1_amd64.deb
+sudo apt install ./flamejob-agent_1.0.4-1_amd64.deb
 ```
 
-Installing `flamejob-server` sets up a complete server: it creates the `flamejob` system user, generates `jwt.key` and `plain.key`, writes a default **local-mode** `/etc/flamejob/flamejob.toml` (only if one isn't already present, so upgrades keep your edits), installs the systemd unit, and **enables** the service. It does not *start* it — the database must be reachable first (see First boot). Edit the config for an external database or the remote runner before starting. `apt purge flamejob-server` removes the generated config and keys. The other three packages simply place their binary on `PATH`.
+Installing `flamejob-server` sets up a complete server: it creates the `flamejob` system user, generates `jwt.key` and `plain.key`, writes a default **local-mode** `/etc/flamejob/flamejob.toml` (only if one isn't already present, so upgrades keep your edits), installs the systemd unit, and **enables** the service. It does not *start* it — the database must be reachable first (see First boot). Edit the config for an external database or the remote runner before starting. `apt purge flamejob-server` removes the generated config and keys.
+
+Installing `flamejob-agent` (on a worker) likewise sets up the worker: it creates the `flamejob-agent` system user, creates `/var/lib/flamejob-agent` (owned by that user, with the `pki`/`jobs`/`cache` subdirs the agent writes into), writes a default `/etc/flamejob-agent/agent.env`, and installs and **enables** a systemd unit that runs the agent as that user. It does not *start* it — set the control-plane URL and a one-time claim token in `agent.env` first (see §7), and ensure `hashcat` is installed on the worker. `apt purge flamejob-agent` removes the generated `agent.env`. The `flamejob-cli` and `flamejob-tui` packages simply place their binary on `PATH`.
 
 **Docker Compose (quickest, for evaluation).** `deploy/docker-compose.yml` brings up PostgreSQL 16 and builds and runs `flamejobd`:
 
@@ -128,7 +130,7 @@ In practice: **admins manage people and agents but cannot run jobs or read crack
 
 **Creating users.** `POST /admin/users` (requires `ManageUsers`) takes a username, a password and a list of roles and creates a local account. The `fj` CLI handles login and identity (`fj login`, `fj whoami`) but does not wrap user creation — call the endpoint directly (for example with `curl` and an admin token) or from your own tooling.
 
-**The break-glass superadmin.** The `superadmin` seeded on first boot (§4) is a local account for bootstrapping and emergencies. Once it exists, log in as it and create named admin and operator accounts rather than sharing it. Version 1.0.3 ships account *creation* but not a password-change or disable endpoint, so rotating the superadmin password — or disabling any account — is a database operation today (the `users` table carries a `disabled` flag that login honours). Treat that as the current rotation path until later releases add self-service.
+**The break-glass superadmin.** The `superadmin` seeded on first boot (§4) is a local account for bootstrapping and emergencies. Once it exists, log in as it and create named admin and operator accounts rather than sharing it. Version 1.0.4 ships account *creation* but not a password-change or disable endpoint, so rotating the superadmin password — or disabling any account — is a database operation today (the `users` table carries a `disabled` flag that login honours). Treat that as the current rotation path until later releases add self-service.
 
 **Directory integration (roadmap).** The `ManageDirectory` capability and the installer's directory prompt are placeholders for planned LDAP/AD-mapped RBAC (Phase 5). Until then, all roles come from the local `user_roles` table.
 
@@ -165,7 +167,7 @@ Log verbosity is set with `FJ_LOG`. Note the agent's default `--server` port (`8
 
 **Monitoring the fleet.** `GET /agents` (requires `ViewStats`) lists enrolled workers with status and timestamps. Status moves through `enrolled` (certificate issued, never connected), `online` (connected now), `offline` (disconnected), and `revoked` (certificate refused at connect).
 
-**Transport security.** The issued certificates are intended for mutual TLS, but in 1.0.3 the agent WebSocket (`/agent/stream`) and the agent file-download endpoint (`/agent/files/{id}`) both authenticate at the *application* layer — by certificate fingerprint — and do not themselves terminate transport TLS. For anything beyond a trusted network, terminate TLS in front of `flamejobd` with a rustls acceptor or a reverse proxy.
+**Transport security.** The issued certificates are intended for mutual TLS, but in 1.0.4 the agent WebSocket (`/agent/stream`) and the agent file-download endpoint (`/agent/files/{id}`) both authenticate at the *application* layer — by certificate fingerprint — and do not themselves terminate transport TLS. For anything beyond a trusted network, terminate TLS in front of `flamejobd` with a rustls acceptor or a reverse proxy.
 
 **File distribution.** As of 1.0.3 the control plane distributes wordlist and rule files to agents automatically. When a chunk task references a wordlist or rule (by file id), the agent fetches it from the control plane over `GET /agent/files/{id}` — authenticated with the same client certificate it uses on the WebSocket — and caches it under `{data_dir}/cache/{id}`, re-using the cached copy on later tasks. Mask attacks carry the mask string inline and need no download. So a wordlist attack in remote mode no longer requires pre-staging files on each agent; the first agent to run a chunk pulls the file on demand.
 
@@ -258,7 +260,7 @@ When agents are connected (§7) they push their own device telemetry up the WebS
 
 **Health and readiness.** `GET /healthz` returns `ok` when the process is serving. `GET /metrics`, `GET /agents` and `GET /devices` are useful deeper liveness probes once the system is in use.
 
-**Scaling and current limits.** Version 1.0.3 is a single control plane with a single scheduler that processes one job and one chunk at a time; it does not yet parallelise one job across many agents. Uploaded wordlists and rules live on the control plane's `data_dir` and are now distributed to agents on demand — each agent fetches and caches the files a chunk needs (§7, *File distribution*). Hybrid attacks (`-a 6`/`-a 7`) are not fully wired yet. Plan capacity with those constraints in mind.
+**Scaling and current limits.** Version 1.0.4 is a single control plane with a single scheduler that processes one job and one chunk at a time; it does not yet parallelise one job across many agents. Uploaded wordlists and rules live on the control plane's `data_dir` and are now distributed to agents on demand — each agent fetches and caches the files a chunk needs (§7, *File distribution*). Hybrid attacks (`-a 6`/`-a 7`) are not fully wired yet. Plan capacity with those constraints in mind.
 
 ## 11. Troubleshooting
 
@@ -276,7 +278,7 @@ When agents are connected (§7) they push their own device telemetry up the WebS
 
 ### Command-line reference (all tools)
 
-flamejob ships four executables. `flamejobd`, `flamejob-tui` and `fj-agent` take no subcommands and are driven by flags and environment variables; `fj` is the subcommand-based client. Every documented flag and variable below is exhaustive for 1.0.3 — if a capability isn't listed here, it isn't exposed on the CLI yet.
+flamejob ships four executables. `flamejobd`, `flamejob-tui` and `fj-agent` take no subcommands and are driven by flags and environment variables; `fj` is the subcommand-based client. Every documented flag and variable below is exhaustive for 1.0.4 — if a capability isn't listed here, it isn't exposed on the CLI yet.
 
 #### `flamejobd` — control-plane server
 
@@ -307,7 +309,7 @@ Takes **no arguments or subcommands**. All behaviour comes from configuration (b
 | --- | --- | --- | --- |
 | `fj job ls` | — | `ViewJobs` | List jobs: id, name, state, priority. |
 | `fj job show` | `<id>` | `ViewJobs` | Full job detail (always JSON). |
-| `fj job submit` | `--hashlist <id>` `--name <n>` `[-a, --attack-mode <int>=0]` `[--wordlist <id\|path>]` `[--mask <str>]` `[--priority <int>=100]` | `SubmitJobs` | Create a job; print its id. See flag notes below. |
+| `fj job submit` | `--hashlist <id>` `--name <n>` `[-a, --attack-mode <int>=0]` `[--wordlist <id\|path>]` `[--rule <id\|path>]…` `[--mask <str>]` `[--priority <int>=100]` | `SubmitJobs` | Create a job; print its id. See flag notes below. |
 | `fj job pause` | `<id>` | `SubmitJobs` | Pause a running job (resumable). |
 | `fj job resume` | `<id>` | `SubmitJobs` | Return a paused job to the queue. |
 | `fj job cancel` | `<id>` | `SubmitJobs` | Cancel a job (terminal). |
@@ -319,9 +321,10 @@ Takes **no arguments or subcommands**. All behaviour comes from configuration (b
 - `--name <n>` *(required)* — a human-readable job name.
 - `-a, --attack-mode <int>` — hashcat's `-a` value; default `0` (dictionary). `3` is mask.
 - `--wordlist <id|path>` — **either** an already-uploaded file id (UUID) **or** a path to a local wordlist file, which `fj` uploads for you (as kind `wordlist`) and then references. A value that is neither a known UUID nor an existing file is rejected. Omit for attacks that need no wordlist.
-- `--mask <str>` — a hashcat mask (e.g. `?a?a?a?a`) for a mask attack; pair with `-a 3`. Masks travel inline to agents, so they need no file distribution.
+- `--mask <str>` — a hashcat mask (e.g. `?a?a?a?a`) for a mask / brute-force attack; pair with `-a 3`. Masks travel inline to agents, so they need no file distribution.
+- `--rule <id|path>` — a rule file for a dictionary attack (`-a 0`): an uploaded file id (UUID) or a local path, uploaded for you as kind `rule`. Repeatable — pass `--rule` several times to apply rule files in order. Rules are distributed to remote agents like wordlists (§7, *File distribution*).
 - `--priority <int>` — queue order, lower first; default `100`.
-- *Not exposed as flags in 1.0.3:* rule files and extra hashcat arguments exist in the API's job config but have no `fj` flag yet; submit those via the API directly if needed.
+- *Not exposed as a flag in 1.0.4:* raw extra hashcat arguments exist in the API's job config but have no `fj` flag yet; submit those via the API directly if needed.
 
 **Hashlists** (`fj hashlist <sub>`)
 
@@ -409,4 +412,4 @@ Every route and the capability it requires. The authoritative, always-current co
 
 **Config environment map.** Any key maps to `FJ_<SECTION>__<KEY>` (uppercase, `__` between levels): e.g. `FJ_SERVER__BIND`, `FJ_DATABASE__DSN`, `FJ_AUTH__JWT_SECRET`, `FJ_SCHEDULER__RUNNER`, `FJ_TELEMETRY__ENABLED`. See §5.
 
-**Further reading.** The architecture decision record and build spec live in the project workspace. Roadmap items not in 1.0.3: the web UI, LDAP/AD-mapped RBAC (Phase 4/5), job-level parallelism across agents, and hybrid attack modes (`-a 6`/`-a 7`).
+**Further reading.** The architecture decision record and build spec live in the project workspace. Roadmap items not in 1.0.4: the web UI, LDAP/AD-mapped RBAC (Phase 4/5), job-level parallelism across agents, and hybrid attack modes (`-a 6`/`-a 7`).

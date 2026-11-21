@@ -6,8 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [1.0.4] - 2026-11-21
 
-Makes a plain `flamejob-agent` install produce a working worker, mirroring the
-server packaging fix from 1.0.2.
+Makes a plain `flamejob-agent` install produce a working worker (mirroring the
+server packaging fix from 1.0.2), and exposes rule files on the CLI.
+
+### Added
+- **`fj job submit --rule <id|path>`** applies a rule file to a dictionary
+  attack. Repeat the flag to apply several rule files in order; each value is an
+  already-uploaded file id (UUID) or a path to a local rule file, which is
+  uploaded for you (as kind `rule`). Rules are distributed to remote agents the
+  same way wordlists are (see 1.0.3). Brute-force attacks are the mask attack
+  (`-a 3`), already exposed as `--mask` since 1.0.3.
 
 ### Fixed
 - **Agent `.deb` now sets up the worker, not just the binary.** It creates a

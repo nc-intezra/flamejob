@@ -71,9 +71,15 @@ enum JobCmd {
         /// wordlist file, which is uploaded for you.
         #[arg(long)]
         wordlist: Option<String>,
-        /// Mask string for a mask attack (`-a 3`), e.g. '?a?a?a?a?a?a'.
+        /// Mask string for a mask / brute-force attack (`-a 3`), e.g.
+        /// '?a?a?a?a?a?a'.
         #[arg(long)]
         mask: Option<String>,
+        /// A rule file to apply (dictionary attacks): a file id (UUID) already
+        /// uploaded, or a path to a local rule file, which is uploaded for you.
+        /// Repeat to apply several rule files in order.
+        #[arg(long = "rule")]
+        rules: Vec<String>,
         #[arg(long, default_value_t = 100)]
         priority: i32,
     },
@@ -154,6 +160,27 @@ fn print_json<T: serde::Serialize>(value: &T) -> Result<()> {
     Ok(())
 }
 
+/// Resolve a file argument that is either an already-uploaded file id (UUID) or
+/// a path to a local file, which is uploaded with the given kind and its new id
+/// returned.
+async fn resolve_file_arg(client: &Client, value: &str, kind: &str) -> Result<Uuid> {
+    match Uuid::parse_str(value) {
+        Ok(id) => Ok(id),
+        Err(_) => {
+            let p = std::path::Path::new(value);
+            if p.is_file() {
+                let f = client.upload_file(p, kind).await?;
+                println!("uploaded {kind} {} ({})", f.id, f.name);
+                Ok(f.id)
+            } else {
+                anyhow::bail!(
+                    "--{kind} '{value}' is neither a known file id (UUID) nor a path to a local file"
+                )
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -200,28 +227,19 @@ async fn main() -> Result<()> {
                 name,
                 wordlist,
                 mask,
+                rules,
                 priority,
             } => {
-                // Accept either an existing file id (UUID) or a local path,
-                // uploading the file in the latter case.
+                // Each file arg is an existing file id (UUID) or a local path,
+                // which is uploaded in the latter case.
                 let wordlist_file_id = match wordlist {
                     None => None,
-                    Some(w) => match Uuid::parse_str(&w) {
-                        Ok(id) => Some(id),
-                        Err(_) => {
-                            let p = std::path::Path::new(&w);
-                            if p.is_file() {
-                                let f = client.upload_file(p, "wordlist").await?;
-                                println!("uploaded wordlist {} ({})", f.id, f.name);
-                                Some(f.id)
-                            } else {
-                                anyhow::bail!(
-                                    "--wordlist '{w}' is neither a known file id (UUID) nor a path to a local file"
-                                );
-                            }
-                        }
-                    },
+                    Some(w) => Some(resolve_file_arg(&client, &w, "wordlist").await?),
                 };
+                let mut rule_file_ids = Vec::new();
+                for r in &rules {
+                    rule_file_ids.push(resolve_file_arg(&client, r, "rule").await?);
+                }
                 let req = JobCreate {
                     name,
                     hashlist_id: hashlist,
@@ -229,7 +247,7 @@ async fn main() -> Result<()> {
                     priority: Some(priority),
                     config: JobConfig {
                         wordlist_file_id,
-                        rule_file_ids: vec![],
+                        rule_file_ids,
                         mask,
                         extra_args: vec![],
                     },
