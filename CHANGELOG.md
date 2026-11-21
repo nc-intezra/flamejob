@@ -4,6 +4,28 @@ All notable changes to flamejob are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] - 2026-11-20
+
+Packaging fix so a plain install produces a working server.
+
+### Fixed
+- The `flamejob-server` `.deb` now installs a complete server, not just the
+  binary: it ships the systemd unit and runs maintainer scripts that create the
+  `flamejob` system user, generate the JWT and plaintext keys, write a default
+  local config (only if absent, so upgrades and edits are preserved), and enable
+  the service. `apt purge` removes the generated config and keys.
+- `deploy/install.sh` now installs the binaries (building them if `cargo` is
+  present, or exiting with guidance if not), creates the `flamejob` user, and
+  installs and enables the systemd unit — previously it wrote config for a
+  binary it never installed.
+- The systemd unit's `ExecStart` now points at `/usr/bin/flamejobd`, matching
+  where both the package and the installer place the binary (was
+  `/usr/local/bin/flamejobd`).
+
+### Changed
+- The `flamejob-server` package now depends on `openssl` (used by the postinst
+  to generate keys).
+
 ## [1.0.1] - 2026-11-20
 
 Documentation and packaging release. No changes to the server, agent, CLI or TUI
@@ -75,5 +97,6 @@ fleet, all over one OpenAPI-described API.
   self-contained over the wire, while wordlist attacks assume the file is
   present on the agent.
 
+[1.0.2]: https://github.com/nc-intezra/flamejob/releases/tag/v1.0.2
 [1.0.1]: https://github.com/nc-intezra/flamejob/releases/tag/v1.0.1
 [1.0.0]: https://github.com/nc-intezra/flamejob/releases/tag/v1.0.0
