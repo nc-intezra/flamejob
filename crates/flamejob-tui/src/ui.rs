@@ -21,6 +21,7 @@ const ACCENT: Color = Color::Rgb(97, 175, 239);
 const GOOD: Color = Color::Rgb(152, 195, 121);
 const WARN: Color = Color::Rgb(229, 192, 123);
 const BAD: Color = Color::Rgb(224, 108, 117);
+const BUSY: Color = Color::Rgb(224, 163, 94);
 const SEL: Color = Color::Rgb(45, 50, 64);
 const TRACK: Color = Color::Rgb(55, 58, 68);
 
@@ -41,10 +42,15 @@ pub fn render(f: &mut Frame, d: &Dashboard, st: &mut UiState) {
         Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)]).split(rows[1]);
     jobs_table(f, body[0], d, st);
 
-    let right =
-        Layout::vertical([Constraint::Percentage(52), Constraint::Percentage(48)]).split(body[1]);
+    let right = Layout::vertical([
+        Constraint::Percentage(44),
+        Constraint::Percentage(31),
+        Constraint::Percentage(25),
+    ])
+    .split(body[1]);
     job_detail(f, right[0], d, st);
     devices(f, right[1], d);
+    agents(f, right[2], d);
 
     footer(f, rows[2], d);
 }
@@ -336,6 +342,55 @@ fn devices(f: &mut Frame, area: Rect, d: &Dashboard) {
         Constraint::Length(7),
         Constraint::Length(9),
         Constraint::Length(11),
+    ];
+    f.render_widget(
+        Table::new(rows, widths).header(header).column_spacing(1),
+        inner,
+    );
+}
+
+/// Connected-agent panel: a status dot and styled name per agent — green bold
+/// (online/usable), gray italic (away), red bold-underline (error), orange bold
+/// (busy / near-overloaded).
+fn agents(f: &mut Frame, area: Rect, d: &Dashboard) {
+    let usable = d
+        .agents
+        .iter()
+        .filter(|a| a.status == "online" || a.status == "busy")
+        .count();
+    let title = format!("Agents · {usable}/{} usable", d.agents.len());
+    let block = panel(&title);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    if d.agents.is_empty() {
+        let note = Paragraph::new(Line::from(Span::styled(
+            "no agents enrolled",
+            Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
+        )));
+        f.render_widget(note, inner);
+        return;
+    }
+
+    let header = Row::new(["", "AGENT", "STATUS"])
+        .style(Style::default().fg(DIM).add_modifier(Modifier::BOLD));
+    let rows = d.agents.iter().map(|a| {
+        let (color, modifier) = match a.status.as_str() {
+            "online" => (GOOD, Modifier::BOLD),
+            "busy" => (BUSY, Modifier::BOLD),
+            "error" => (BAD, Modifier::BOLD | Modifier::UNDERLINED),
+            _ => (DIM, Modifier::ITALIC), // away / unknown
+        };
+        Row::new(vec![
+            Cell::from("●").style(Style::default().fg(color)),
+            Cell::from(a.name.clone()).style(Style::default().fg(color).add_modifier(modifier)),
+            Cell::from(a.status.clone()).style(Style::default().fg(DIM)),
+        ])
+    });
+    let widths = [
+        Constraint::Length(1),
+        Constraint::Min(10),
+        Constraint::Length(7),
     ];
     f.render_widget(
         Table::new(rows, widths).header(header).column_spacing(1),

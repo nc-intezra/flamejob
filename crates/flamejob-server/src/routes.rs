@@ -217,6 +217,7 @@ async fn create_job(
     let view = JobView {
         id,
         name: body.name,
+        hashlist_id: body.hashlist_id,
         state: JobState::Queued,
         priority,
         created_at: Utc::now(),
@@ -828,7 +829,7 @@ fn parse_job_state(s: &str) -> JobState {
     serde_json::from_value(serde_json::Value::String(s.to_string())).unwrap_or(JobState::Queued)
 }
 
-const JOB_SELECT: &str = "SELECT j.id, j.name, j.state::text, j.priority, j.created_at, \
+const JOB_SELECT: &str = "SELECT j.id, j.name, j.hashlist_id, j.state::text, j.priority, j.created_at, \
     j.est_completion, \
     COALESCE((SELECT SUM(CASE WHEN t.state='done' THEN GREATEST(t.keyspace_len,1)::float8 \
         ELSE t.progress*GREATEST(t.keyspace_len,1)::float8 END) \
@@ -840,6 +841,7 @@ const JOB_SELECT: &str = "SELECT j.id, j.name, j.state::text, j.priority, j.crea
 type JobAgg = (
     Uuid,
     String,
+    Uuid,
     String,
     i32,
     chrono::DateTime<chrono::Utc>,
@@ -854,14 +856,15 @@ fn job_view(r: JobAgg) -> JobView {
     JobView {
         id: r.0,
         name: r.1,
-        state: parse_job_state(&r.2),
-        priority: r.3,
-        created_at: r.4,
-        est_completion: r.5,
-        progress: r.6,
-        speed: r.7,
-        cracked: r.8,
-        total: r.9,
+        hashlist_id: r.2,
+        state: parse_job_state(&r.3),
+        priority: r.4,
+        created_at: r.5,
+        est_completion: r.6,
+        progress: r.7,
+        speed: r.8,
+        cracked: r.9,
+        total: r.10,
     }
 }
 

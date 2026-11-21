@@ -30,6 +30,8 @@ max_chunks = 500
 # concurrent hashcat processes for the active job on the local runner
 # (the remote runner fans across the fleet's advertised slots instead)
 # local_parallelism = 1
+# how many jobs run at once; their chunks share the fleet's capacity (0 = unlimited)
+# max_concurrent_jobs = 8
 
 [web]
 # browser dashboard (static SPA that calls the API); mirrors the TUI

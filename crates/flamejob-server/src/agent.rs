@@ -3,7 +3,7 @@
 //! tracks connected workers and dispatches chunk tasks, and a `RemoteRunner`
 //! that implements the flamejob-core `Runner` trait so the existing scheduler
 //! can ship chunks to agents instead of running them locally.
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -54,13 +54,27 @@ struct HubInner {
     queue: VecDeque<AgentTask>,
     /// Outstanding keyspace probes.
     ks_waiters: HashMap<Uuid, oneshot::Sender<u64>>,
+    /// Connected agents currently in an error condition (last frame was an
+    /// `Error`); cleared when they re-report `Ready` or reconnect.
+    errored: HashSet<Uuid>,
 }
 
 struct Conn {
     #[allow(dead_code)]
     name: String,
     tx: mpsc::Sender<ServerMsg>,
+    /// Free slots right now.
     slots: u32,
+    /// Highest slot count this agent has ever advertised — lets us tell a
+    /// multi-slot agent that is fully loaded ("busy") from a single-slot agent
+    /// that is simply working.
+    max_slots: u32,
+}
+
+/// Live, in-memory view of a connected agent, for the status taxonomy.
+pub struct AgentLive {
+    pub busy: bool,
+    pub errored: bool,
 }
 
 impl AgentHub {
@@ -69,17 +83,24 @@ impl AgentHub {
     }
 
     async fn register(&self, agent_id: Uuid, name: String, tx: mpsc::Sender<ServerMsg>) {
-        self.inner
-            .lock()
-            .await
-            .conns
-            .insert(agent_id, Conn { name, tx, slots: 0 });
+        let mut g = self.inner.lock().await;
+        g.errored.remove(&agent_id);
+        g.conns.insert(
+            agent_id,
+            Conn {
+                name,
+                tx,
+                slots: 0,
+                max_slots: 0,
+            },
+        );
     }
 
     /// Mark an agent gone; fail its in-flight tasks so the scheduler retries.
     async fn disconnect(&self, agent_id: Uuid) {
         let mut g = self.inner.lock().await;
         g.conns.remove(&agent_id);
+        g.errored.remove(&agent_id);
         let orphaned: Vec<Uuid> = g
             .assigned
             .iter()
@@ -104,10 +125,34 @@ impl AgentHub {
     /// Update an agent's free slots and dispatch any queued work.
     async fn set_ready(&self, agent_id: Uuid, slots: u32) {
         let mut g = self.inner.lock().await;
+        g.errored.remove(&agent_id); // a fresh Ready clears a prior error
         if let Some(c) = g.conns.get_mut(&agent_id) {
             c.slots = slots;
+            c.max_slots = c.max_slots.max(slots);
         }
         Self::drain(&mut g);
+    }
+
+    /// Flag a connected agent as errored (it reported an `Error` frame).
+    async fn mark_error(&self, agent_id: Uuid) {
+        self.inner.lock().await.errored.insert(agent_id);
+    }
+
+    /// Live status of every currently-connected agent, for `list_agents`.
+    pub async fn live(&self) -> HashMap<Uuid, AgentLive> {
+        let g = self.inner.lock().await;
+        g.conns
+            .iter()
+            .map(|(id, c)| {
+                (
+                    *id,
+                    AgentLive {
+                        busy: c.max_slots > 1 && c.slots == 0,
+                        errored: g.errored.contains(id),
+                    },
+                )
+            })
+            .collect()
     }
 
     /// Queue (and if possible immediately assign) a chunk task.
@@ -405,14 +450,33 @@ pub async fn list_agents(
     )
     .fetch_all(&state.db)
     .await?;
+    // Translate the stored record + live hub view into the status taxonomy the
+    // clients render: online (connected), away (not connected), error (reported
+    // an error, or revoked), busy (a multi-slot agent that is fully loaded).
+    let live = state.agents.live().await;
     Ok(Json(
         rows.into_iter()
-            .map(|(id, name, status, enrolled_at, last_seen)| AgentInfo {
-                id,
-                name,
-                status,
-                enrolled_at,
-                last_seen,
+            .map(|(id, name, db_status, enrolled_at, last_seen)| {
+                let status = if db_status == "revoked" {
+                    "error"
+                } else if let Some(l) = live.get(&id) {
+                    if l.errored {
+                        "error"
+                    } else if l.busy {
+                        "busy"
+                    } else {
+                        "online"
+                    }
+                } else {
+                    "away"
+                };
+                AgentInfo {
+                    id,
+                    name,
+                    status: status.to_string(),
+                    enrolled_at,
+                    last_seen,
+                }
             })
             .collect(),
     ))
@@ -609,6 +673,7 @@ async fn handle_agent_msg(state: &AppState, agent_id: Uuid, agent_name: &str, ms
         }
         AgentMsg::Error { task_id, message } => {
             tracing::warn!(%agent_id, ?task_id, %message, "agent reported error");
+            state.agents.mark_error(agent_id).await;
             if let Some(task_id) = task_id {
                 if let Some(sink) = state.agents.sink_for(task_id).await {
                     let _ = sink
@@ -759,5 +824,49 @@ mod tests {
         };
         hub.dispatch(task, stx).await;
         assert_eq!(hub.capacity().await, 3);
+    }
+
+    fn mk_task() -> AgentTask {
+        AgentTask {
+            task_id: Uuid::new_v4(),
+            hash_type: 0,
+            attack_mode: 3,
+            hashes: vec![],
+            mask: Some("?d?d".into()),
+            wordlist: None,
+            rules: vec![],
+            keyspace_offset: 0,
+            keyspace_len: 0,
+            extra_args: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_live_status_online_busy_error() {
+        let hub = AgentHub::new();
+        let a = Uuid::new_v4();
+        let (tx, _rx) = mpsc::channel(8);
+        hub.register(a, "gpu-1".into(), tx).await;
+        hub.set_ready(a, 2).await; // multi-slot agent, 2 free
+        let l = hub.live().await;
+        assert!(
+            !l[&a].busy && !l[&a].errored,
+            "idle multi-slot agent is online"
+        );
+
+        // Load both slots -> fully loaded multi-slot agent reads as busy.
+        for _ in 0..2 {
+            let (s, _r) = mpsc::channel(8);
+            hub.dispatch(mk_task(), s).await;
+        }
+        assert!(
+            hub.live().await[&a].busy,
+            "fully loaded multi-slot agent is busy"
+        );
+
+        hub.mark_error(a).await;
+        assert!(hub.live().await[&a].errored, "error frame flags the agent");
+        hub.set_ready(a, 1).await; // a fresh Ready clears the error
+        assert!(!hub.live().await[&a].errored, "Ready clears the error");
     }
 }

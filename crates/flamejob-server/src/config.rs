@@ -59,10 +59,18 @@ pub struct SchedulerCfg {
     /// this and instead fans chunks across the fleet's reported free slots.
     #[serde(default = "default_local_parallelism")]
     pub local_parallelism: usize,
+    /// How many jobs may run concurrently (admitted at once). Their chunks share
+    /// the fleet's capacity. 0 = unlimited. Default 8.
+    #[serde(default = "default_max_concurrent_jobs")]
+    pub max_concurrent_jobs: usize,
 }
 
 fn default_local_parallelism() -> usize {
     1
+}
+
+fn default_max_concurrent_jobs() -> usize {
+    8
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -144,6 +152,7 @@ impl Default for Config {
                 max_chunks: 500,
                 runner: "local".into(),
                 local_parallelism: 1,
+                max_concurrent_jobs: 8,
             },
             telemetry: TelemetryCfg {
                 enabled: true,

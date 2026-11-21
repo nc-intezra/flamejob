@@ -104,6 +104,7 @@ flamejob reads configuration from three layers, in increasing precedence: built-
 | `[scheduler]` | `max_chunks` | `500` | Upper bound on chunks per job. |
 | `[scheduler]` | `runner` | `local` | `local` = hashcat here; `remote` = dispatch to agents. |
 | `[scheduler]` | `local_parallelism` | `1` | Concurrent hashcat processes for the active job on the **local** runner. The remote runner instead fans across the fleet's free slots. |
+| `[scheduler]` | `max_concurrent_jobs` | `8` | How many jobs run at once (admitted together); their chunks share the fleet's capacity. 0 = unlimited. |
 | `[telemetry]` | `enabled` | `true` | Run the local GPU/host collector. |
 | `[telemetry]` | `sample_interval_secs` | `5` | Seconds between samples. |
 | `[telemetry]` | `history_limit` | `500` | Max rows returned by the device-history endpoint. |
@@ -178,7 +179,7 @@ Log verbosity is set with `FJ_LOG`. Note the agent's default `--server` port (`8
 
 **File distribution.** As of 1.0.3 the control plane distributes wordlist and rule files to agents automatically. When a chunk task references a wordlist or rule (by file id), the agent fetches it from the control plane over `GET /agent/files/{id}` — authenticated with the same client certificate it uses on the WebSocket — and caches it under `{data_dir}/cache/{id}`, re-using the cached copy on later tasks. Mask attacks carry the mask string inline and need no download. So a wordlist attack in remote mode no longer requires pre-staging files on each agent; the first agent to run a chunk pulls the file on demand.
 
-**Resilience and limits.** If an agent disconnects mid-task, the control plane fails its in-flight chunks so the scheduler can retry them. The scheduler runs **one job at a time but fans that job's chunks across the whole fleet in parallel** — it keeps as many chunks in flight as the connected agents advertise free slots, so adding agents speeds up a single job (per-job progress and ETA aggregate across the running chunks). It does not yet run several *different* jobs concurrently. One other limit to plan around: **hybrid attacks (`-a 6`/`-a 7`, wordlist + mask together) are not fully wired** — pure wordlist (`-a 0`) and pure mask (`-a 3`) attacks are the supported paths.
+**Resilience and limits.** If an agent disconnects mid-task, the control plane fails its in-flight chunks so the scheduler can retry them. The scheduler runs **several jobs at once and fans every job's chunks across the whole fleet in parallel** — it admits up to `[scheduler].max_concurrent_jobs` jobs and then keeps as many chunks in flight as the connected agents advertise free slots, taking one pending chunk from each running job in priority order (round-robin), so adding agents speeds the whole queue up (per-job progress and ETA aggregate across each job's running chunks). One limit to plan around: **hybrid attacks (`-a 6`/`-a 7`, wordlist + mask together) are not fully wired** — pure wordlist (`-a 0`) and pure mask (`-a 3`) attacks are the supported paths.
 
 ### Distributed quick start
 
@@ -267,7 +268,7 @@ When agents are connected (§7) they push their own device telemetry up the WebS
 
 **Health and readiness.** `GET /healthz` returns `ok` when the process is serving. `GET /metrics`, `GET /agents` and `GET /devices` are useful deeper liveness probes once the system is in use.
 
-**Scaling and current limits.** flamejob is a single control plane with a single scheduler. It processes one job at a time but parallelises that job across the fleet, keeping one chunk in flight per advertised agent slot; on the local runner, `[scheduler].local_parallelism` sets how many hashcat processes run at once (default 1). It does not yet run several different jobs concurrently. Uploaded wordlists and rules live on the control plane's `data_dir` and are distributed to agents on demand — each agent fetches and caches the files a chunk needs (§7, *File distribution*). Hybrid attacks (`-a 6`/`-a 7`) are not fully wired yet. Plan capacity with those constraints in mind.
+**Scaling and current limits.** flamejob is a single control plane with a single scheduler. It runs several jobs concurrently (`[scheduler].max_concurrent_jobs`, default 8) and parallelises every job across the fleet, keeping one chunk in flight per advertised agent slot and sharing that capacity across the running jobs; on the local runner, `[scheduler].local_parallelism` sets how many hashcat processes run at once (default 1). Uploaded wordlists and rules live on the control plane's `data_dir` and are distributed to agents on demand — each agent fetches and caches the files a chunk needs (§7, *File distribution*). Hybrid attacks (`-a 6`/`-a 7`) are not fully wired yet. Plan capacity with those constraints in mind.
 
 ## 11. Troubleshooting
 
@@ -421,11 +422,17 @@ Every route and the capability it requires. The authoritative, always-current co
 
 **Config environment map.** Any key maps to `FJ_<SECTION>__<KEY>` (uppercase, `__` between levels): e.g. `FJ_SERVER__BIND`, `FJ_DATABASE__DSN`, `FJ_AUTH__JWT_SECRET`, `FJ_SCHEDULER__RUNNER`, `FJ_TELEMETRY__ENABLED`. See §5.
 
-**Further reading.** The architecture decision record and build spec live in the project workspace. Roadmap items not yet shipped: LDAP/AD-mapped RBAC (Phase 4/5), running several different jobs concurrently (single-job parallelism across agents is done — §13, §7), and hybrid attack modes (`-a 6`/`-a 7`).
+**Further reading.** The architecture decision record and build spec live in the project workspace. Roadmap items not yet shipped: LDAP/AD-mapped RBAC (Phase 4/5) and hybrid attack modes (`-a 6`/`-a 7`). Many-job, many-agent parallelism is done (§7, §10).
 
 ## 13. Web dashboard
 
 flamejob ships a browser dashboard alongside the TUI. It is a static single-page app that calls the same API and shows the same metrics, gated by the signed-in user's capabilities — so each role sees exactly what it is allowed to (viewers and operators get jobs, chunk breakdowns and device/agent panels; operators also get job controls and "clear finished"; admins get the user- and agent-management forms). The logged-in username and a log-out button sit in the upper-right, next to a light/dark theme toggle.
+
+**Submitting jobs.** Superadmin and operator sessions get a "Submit a job" panel: drop a hash file onto it (or click to choose), pick a hash-mode (`-m`, from a list of common modes or a custom number) and either a brute-force mask or an uploaded wordlist (with an optional rule file), and submit — the dashboard creates the hashlist, imports the hashes and queues the job to the agent pool in one step.
+
+**Agent status.** The agents panel (and the TUI's) shows each connected agent with a coloured status dot and styled name: a solid green dot with bold green text when the agent is online and usable, a gray dot with italic text when it is away/not connected, a red dot with bold underlined text on error (or if the agent is revoked), and an orange dot with bold text when a multi-slot agent is fully loaded (near overloaded). The status is also exposed as the `status` field on `GET /agents`.
+
+**Cracked passwords.** On a job's detail panel, roles with `ViewPlaintext` get a "Cracked" tab that swaps the chunk list for a scrollable hash → plaintext list of that job's recovered passwords (backed by `GET /hashlists/{id}/cracked`).
 
 **Where it runs.** A separate listener, configured under `[web]` (default `0.0.0.0:9443`). Set `tls_cert` and `tls_key` to serve it over HTTPS; leave them unset for plain HTTP. The dashboard calls the API on its existing port (`[server].bind`, default `:8443`), which now sends CORS headers so the browser can reach it cross-origin; bearer-token auth still gates every protected route. Point the browser at the API elsewhere with `[web].api_base` (e.g. behind a reverse proxy), or override it on the sign-in screen.
 

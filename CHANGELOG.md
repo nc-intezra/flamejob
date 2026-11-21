@@ -4,6 +4,32 @@ All notable changes to flamejob are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Many jobs × many agents.** The scheduler now admits up to
+  `[scheduler].max_concurrent_jobs` jobs (default 8) at once and distributes the
+  whole fleet's chunk capacity across them — each tick it takes one pending
+  chunk from every running job in priority order, round-robin, so several jobs
+  run at once while a single job still fans across every agent. Each job is
+  finalized independently.
+- `[scheduler].max_concurrent_jobs` config key (and
+  `FJ_SCHEDULER__MAX_CONCURRENT_JOBS`).
+- **Web job submission.** Superadmin/Operator dashboards gain a "Submit a job"
+  panel: drop a hash file, choose a hash-mode (`-m`) and a mask or wordlist
+  attack, and it is queued to the agent pool (hashlist + import + job in one
+  step).
+- **Agent status taxonomy.** `GET /agents` now reports a live `status` —
+  `online` (connected/usable), `away` (enrolled, not connected), `error`
+  (reported an error, or revoked), or `busy` (a multi-slot agent that is fully
+  loaded / near overloaded). The web dashboards and the TUI render it as a
+  coloured dot with styled name: green bold, gray italic, red bold-underline,
+  orange bold.
+- **Cracked-password view.** The web job-detail panel gains a "Cracked" tab (for
+  roles with `ViewPlaintext`) showing a scrollable hash → plaintext list.
+- **TUI agents panel** showing connected agents with the status dots above.
+- `JobView.hashlist_id` so clients can fetch a job's cracked results.
+
 ## [1.0.5] - 2026-11-21
 
 Adds a browser dashboard and a browseable OpenAPI reference, parallelises a

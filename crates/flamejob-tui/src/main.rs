@@ -33,6 +33,7 @@ fn empty(server: &str, can_submit: bool) -> Dashboard {
         selected: 0,
         chunks: Vec::new(),
         devices: Vec::new(),
+        agents: Vec::new(),
         telemetry_live: false,
         hide_finished: false,
         can_submit,

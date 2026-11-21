@@ -1,14 +1,15 @@
-//! Scheduler with server-side keyspace chunking and multi-agent parallelism.
+//! Scheduler with server-side keyspace chunking and many-job, many-agent
+//! parallelism.
 //!
 //! A job's keyspace (from `hashcat --keyspace`) is divided into chunk tasks,
-//! each run with `--skip`/`--limit`. The scheduler keeps up to `Runner::capacity`
-//! chunks of the active job in flight at once, so a single job fans out across
-//! the whole fleet (or across several local hashcat processes). A job finishes
-//! early as soon as every hash is cracked.
-//!
-//! One job is active at a time; its chunks run in parallel. When a job has no
-//! more pending or in-flight chunks it is finalized and the next queued job is
-//! claimed.
+//! each run with `--skip`/`--limit`. The scheduler admits up to
+//! `[scheduler].max_concurrent_jobs` jobs at once and then distributes the
+//! fleet's whole chunk capacity (`Runner::capacity` — agent free-slots, or the
+//! local parallelism) across every admitted job: each tick it fills free
+//! capacity by taking one pending chunk from each running job in priority order,
+//! round-robin, so several jobs make progress at once and a single job still
+//! fans across every agent. A job finishes early as soon as every hash is
+//! cracked, and is finalized independently when its own chunks are all done.
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -51,6 +52,8 @@ pub struct Scheduler {
     max_retries: u32,
     chunk_size: i64,
     max_chunks: i64,
+    /// How many jobs may be admitted (running) at once. 0 = unlimited.
+    max_concurrent_jobs: usize,
 }
 
 pub fn spawn(state: AppState) {
@@ -67,6 +70,7 @@ pub fn spawn(state: AppState) {
     };
     let chunk_size = state.cfg.scheduler.chunk_size;
     let max_chunks = state.cfg.scheduler.max_chunks.max(1);
+    let state_cfg_max_concurrent_jobs = state.cfg.scheduler.max_concurrent_jobs;
     let sched = Arc::new(Scheduler {
         state,
         runner,
@@ -77,6 +81,7 @@ pub fn spawn(state: AppState) {
         max_retries: 2,
         chunk_size,
         max_chunks,
+        max_concurrent_jobs: state_cfg_max_concurrent_jobs,
     });
     metrics::gauge!("flamejob_build_info", "version" => env!("CARGO_PKG_VERSION")).set(1.0);
     tokio::spawn(sched.run());
@@ -139,21 +144,12 @@ impl Scheduler {
         //    (covers a mid-job restart where the consume loops were lost).
         self.finalize_completed_jobs().await;
 
-        // 3) Keep the active job's chunks filled to capacity; only claim a new
-        //    job once no running job has remaining work (one job at a time).
-        if let Some(job_id) = self.running_job_with_work().await {
-            if self.inputs.lock().await.contains_key(&job_id) {
-                self.fill_capacity(job_id).await;
-            } else {
-                // Inputs lost (e.g. restart mid-job): re-queue to rebuild.
-                let _ = sqlx::query("UPDATE jobs SET state = 'queued' WHERE id = $1")
-                    .bind(job_id)
-                    .execute(&self.state.db)
-                    .await;
-            }
-        } else {
-            self.claim_and_start().await?;
-        }
+        // 3) Re-queue any running job whose in-memory inputs were lost to a
+        //    restart (so it is rebuilt), admit queued jobs up to the concurrency
+        //    cap, then distribute the fleet's capacity across every running job.
+        self.requeue_orphaned_running().await;
+        self.promote_queued_jobs().await?;
+        self.fill_fleet().await;
 
         self.refresh_metrics().await;
         Ok(())
@@ -231,10 +227,101 @@ impl Scheduler {
             job_id,
             state: JobState::Running,
         });
-        tracing::info!(%job_id, chunks = chunks.len(), "job running (chunked)");
-        // Fan the first wave of chunks across available capacity immediately.
-        self.fill_capacity(job_id).await;
+        tracing::info!(%job_id, chunks = chunks.len(), "job admitted (chunked)");
+        // The next fill_fleet pass starts this job's chunks alongside the others.
         Ok(())
+    }
+
+    /// Admit queued jobs (lowest priority number first) into the running set
+    /// until the concurrency cap is reached or nothing is queued.
+    async fn promote_queued_jobs(self: &Arc<Self>) -> anyhow::Result<()> {
+        loop {
+            if self.max_concurrent_jobs > 0 {
+                let active: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM jobs WHERE state IN ('assigned','running')",
+                )
+                .fetch_one(&self.state.db)
+                .await
+                .unwrap_or(0);
+                if active as usize >= self.max_concurrent_jobs {
+                    break;
+                }
+            }
+            if !self.claim_and_start().await? {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Re-queue running jobs whose shared inputs are missing from memory (a
+    /// restart mid-job); `promote`/`launch` then rebuilds their chunk set.
+    async fn requeue_orphaned_running(&self) {
+        let ids: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT j.id FROM jobs j WHERE j.state = 'running' \
+             AND EXISTS (SELECT 1 FROM tasks t WHERE t.job_id = j.id \
+                         AND t.state IN ('pending','running'))",
+        )
+        .fetch_all(&self.state.db)
+        .await
+        .unwrap_or_default();
+        let missing: Vec<Uuid> = {
+            let inputs = self.inputs.lock().await;
+            ids.into_iter()
+                .filter(|id| !inputs.contains_key(id))
+                .collect()
+        };
+        for job_id in missing {
+            let _ = sqlx::query("UPDATE jobs SET state = 'queued' WHERE id = $1")
+                .bind(job_id)
+                .execute(&self.state.db)
+                .await;
+        }
+    }
+
+    /// Distribute the fleet's chunk capacity across all admitted jobs: each pass
+    /// starts one pending chunk from every running job in priority order, until
+    /// the in-flight total reaches `Runner::capacity` or no pending chunks remain.
+    async fn fill_fleet(self: &Arc<Self>) {
+        let want = self.runner.capacity().await.max(1);
+        loop {
+            if self.inflight.lock().await.len() >= want {
+                break;
+            }
+            let jobs = self.fillable_jobs().await;
+            if jobs.is_empty() {
+                break;
+            }
+            let mut started_any = false;
+            for job_id in jobs {
+                if self.inflight.lock().await.len() >= want {
+                    break;
+                }
+                if !self.inputs.lock().await.contains_key(&job_id) {
+                    continue; // admitted but inputs not ready yet
+                }
+                if let Some((task_id, off, len)) = self.next_pending_chunk(job_id).await {
+                    if self.start_chunk(job_id, task_id, off, len).await {
+                        started_any = true;
+                    }
+                }
+            }
+            if !started_any {
+                break;
+            }
+        }
+    }
+
+    /// Running jobs that still have a pending chunk, in priority order.
+    async fn fillable_jobs(&self) -> Vec<Uuid> {
+        sqlx::query_scalar(
+            "SELECT j.id FROM jobs j WHERE j.state = 'running' \
+             AND EXISTS (SELECT 1 FROM tasks t WHERE t.job_id = j.id AND t.state = 'pending') \
+             ORDER BY j.priority, j.created_at",
+        )
+        .fetch_all(&self.state.db)
+        .await
+        .unwrap_or_default()
     }
 
     async fn prepare_inputs(
@@ -318,28 +405,6 @@ impl Scheduler {
             extra_args: cfg.extra_args,
             total_keyspace,
         })
-    }
-
-    /// Start pending chunks of `job_id` until the number in flight for that job
-    /// reaches the runner's current capacity (fleet slots, or local parallelism).
-    async fn fill_capacity(self: &Arc<Self>, job_id: Uuid) {
-        if !self.inputs.lock().await.contains_key(&job_id) {
-            return;
-        }
-        let want = self.runner.capacity().await.max(1);
-        loop {
-            if self.inflight_count_for(job_id).await >= want {
-                break;
-            }
-            match self.next_pending_chunk(job_id).await {
-                Some((task_id, offset, len)) => {
-                    if !self.start_chunk(job_id, task_id, offset, len).await {
-                        break;
-                    }
-                }
-                None => break,
-            }
-        }
     }
 
     async fn next_pending_chunk(&self, job_id: Uuid) -> Option<(Uuid, i64, i64)> {
@@ -557,20 +622,6 @@ impl Scheduler {
         }
         let secs = remaining / speed as f64;
         Some(Utc::now() + chrono::Duration::milliseconds((secs * 1000.0) as i64))
-    }
-
-    /// A running job that still has pending or in-flight chunks (the one we fan).
-    async fn running_job_with_work(&self) -> Option<Uuid> {
-        sqlx::query_scalar(
-            "SELECT j.id FROM jobs j WHERE j.state = 'running' \
-             AND EXISTS (SELECT 1 FROM tasks t WHERE t.job_id = j.id \
-                         AND t.state IN ('pending','running')) \
-             ORDER BY j.priority, j.created_at LIMIT 1",
-        )
-        .fetch_optional(&self.state.db)
-        .await
-        .ok()
-        .flatten()
     }
 
     /// Finalize any job stuck in `running` with no pending/running chunks left

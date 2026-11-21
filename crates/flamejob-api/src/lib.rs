@@ -53,6 +53,8 @@ pub struct JobCreate {
 pub struct JobView {
     pub id: Uuid,
     pub name: String,
+    /// The hashlist this job cracks (use `GET /hashlists/{id}/cracked`).
+    pub hashlist_id: Uuid,
     #[schema(value_type = String)]
     pub state: JobState,
     pub priority: i32,
