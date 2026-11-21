@@ -13,11 +13,16 @@ path = "src/main.rs"
 maintainer = "nc-intezra <nc-intezra@users.noreply.github.com>"
 section = "net"
 priority = "optional"
-# Built on Ubuntu 22.04 (glibc 2.35); dependencies are auto-computed from the
-# binary and resolve on Ubuntu 22.04 through newer releases.
+# Built on Ubuntu 22.04 (glibc 2.35); libc6 and friends are auto-computed from
+# the binary ($auto). openssl is used by the postinst to generate keys.
+depends = "$auto, openssl"
+# postinst creates the flamejob user, keys, a default config, and enables the
+# service; prerm/postrm stop/disable it and purge config on `apt purge`.
+maintainer-scripts = "debian/"
 assets = [
     ["target/release/flamejobd", "usr/bin/", "755"],
     ["../../README.md", "usr/share/doc/flamejob-server/README.md", "644"],
+    ["../../deploy/flamejob-server.service", "lib/systemd/system/flamejob-server.service", "644"],
 ]
 
 [dependencies]

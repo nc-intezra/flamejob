@@ -12,6 +12,41 @@ echo "=================="
 command -v hashcat >/dev/null 2>&1 || echo "WARN: hashcat not found on PATH"
 command -v nvidia-smi >/dev/null 2>&1 || echo "WARN: nvidia-smi not found (NVIDIA driver?)"
 
+# This script lives in deploy/; resolve the repo root for binaries and the unit.
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+
+# 1b. System user and binaries
+if ! getent passwd flamejob >/dev/null 2>&1; then
+  sudo useradd --system --user-group \
+    --home-dir "$DATA_DIR" --shell /usr/sbin/nologin flamejob || true
+fi
+
+need_build=0
+for b in flamejobd fj fj-agent flamejob-tui; do
+  command -v "$b" >/dev/null 2>&1 || need_build=1
+done
+if [ "$need_build" = 1 ]; then
+  if [ ! -x "$REPO_ROOT/target/release/flamejobd" ]; then
+    if command -v cargo >/dev/null 2>&1; then
+      echo "flamejob binaries not found — building (cargo build --release --workspace)..."
+      ( cd "$REPO_ROOT" && cargo build --release --workspace )
+    else
+      echo "ERROR: flamejob binaries are not installed and cargo is not available." >&2
+      echo "  Install the .deb packages, or install the Rust toolchain and re-run this" >&2
+      echo "  script from a source checkout so it can build them." >&2
+      exit 1
+    fi
+  fi
+  echo "Installing binaries to /usr/bin ..."
+  sudo install -m0755 \
+    "$REPO_ROOT/target/release/flamejobd" \
+    "$REPO_ROOT/target/release/fj" \
+    "$REPO_ROOT/target/release/fj-agent" \
+    "$REPO_ROOT/target/release/flamejob-tui" \
+    /usr/bin/
+fi
+
 # 2. Database choice
 read -rp "Database [local/external] (local): " DBMODE
 DBMODE=${DBMODE:-local}
@@ -95,7 +130,23 @@ workload = 3
 plaintext_key_file = "$CONF_DIR/plain.key"
 TOML
 
-echo "Directory type recorded: $DIRTYPE (local auth until Phase 5)"
-echo "Wrote $CONF_DIR/flamejob.toml"
-echo "Next: flamejobd runs migrations on start; then seed the break-glass superadmin."
-echo "Install the service with: sudo cp deploy/flamejob-server.service /etc/systemd/system/ && sudo systemctl enable --now flamejob-server"
+# 5. Ownership and service
+sudo chown -R flamejob:flamejob "$CONF_DIR" "$DATA_DIR" || true
+sudo chmod 600 "$CONF_DIR/jwt.key" "$CONF_DIR/plain.key" 2>/dev/null || true
+
+if [ -f "$REPO_ROOT/deploy/flamejob-server.service" ]; then
+  sudo install -m0644 "$REPO_ROOT/deploy/flamejob-server.service" \
+    /etc/systemd/system/flamejob-server.service
+  if [ -d /run/systemd/system ]; then
+    sudo systemctl daemon-reload || true
+    sudo systemctl enable flamejob-server.service || true
+  fi
+fi
+
+echo
+echo "Directory type recorded: $DIRTYPE (local auth until Phase 5)."
+echo "Wrote $CONF_DIR/flamejob.toml and installed the flamejob-server service."
+echo "flamejobd runs migrations on start and seeds the break-glass superadmin"
+echo "(export FJ_BOOTSTRAP_PASSWORD beforehand, or capture the random password it"
+echo "logs on first start via journalctl)."
+echo "Start it once PostgreSQL 16 is reachable:  sudo systemctl start flamejob-server"

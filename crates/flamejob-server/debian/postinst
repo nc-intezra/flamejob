@@ -1,0 +1,72 @@
+#!/bin/sh
+# flamejob-server postinst: user, keys, default config, and service enablement.
+set -e
+
+CONF_DIR=/etc/flamejob
+DATA_DIR=/var/lib/flamejob
+
+case "$1" in
+  configure)
+    # 1. System user the service runs as.
+    if ! getent passwd flamejob >/dev/null 2>&1; then
+      useradd --system --user-group \
+        --home-dir "$DATA_DIR" --shell /usr/sbin/nologin flamejob || true
+    fi
+
+    mkdir -p "$CONF_DIR" "$DATA_DIR"
+
+    # 2. Secrets — generated once, never overwritten.
+    if [ ! -f "$CONF_DIR/jwt.key" ]; then
+      ( umask 077; openssl rand -hex 32 > "$CONF_DIR/jwt.key" )
+    fi
+    if [ ! -f "$CONF_DIR/plain.key" ]; then
+      ( umask 077; openssl rand -hex 32 > "$CONF_DIR/plain.key" )
+    fi
+
+    # 3. Default config — written only if absent, so upgrades and local edits
+    #    are preserved. Defaults to a local database; edit for external/remote.
+    if [ ! -f "$CONF_DIR/flamejob.toml" ]; then
+      JWT=$(cat "$CONF_DIR/jwt.key")
+      HASHCAT=$(command -v hashcat || echo /usr/bin/hashcat)
+      cat > "$CONF_DIR/flamejob.toml" <<TOML
+[server]
+bind = "0.0.0.0:8443"
+[database]
+mode = "local"
+dsn  = "postgres://flamejob@localhost/flamejob"
+max_connections = 10
+[auth]
+jwt_secret = "$JWT"
+token_ttl_hours = 1
+[hashcat]
+binary = "$HASHCAT"
+data_dir = "$DATA_DIR"
+workload = 3
+[crypto]
+plaintext_key_file = "$CONF_DIR/plain.key"
+[scheduler]
+runner = "local"
+TOML
+    fi
+
+    # 4. Ownership and permissions.
+    chown -R flamejob:flamejob "$CONF_DIR" "$DATA_DIR" || true
+    chmod 600 "$CONF_DIR/jwt.key" "$CONF_DIR/plain.key" 2>/dev/null || true
+    chmod 640 "$CONF_DIR/flamejob.toml" 2>/dev/null || true
+
+    # 5. Service: reload + enable, but do not start — the database must be
+    #    reachable first (see the message below).
+    if [ -d /run/systemd/system ]; then
+      systemctl daemon-reload >/dev/null 2>&1 || true
+      systemctl enable flamejob-server.service >/dev/null 2>&1 || true
+    fi
+
+    echo "flamejob-server installed. Config: $CONF_DIR/flamejob.toml"
+    echo "Ensure PostgreSQL 16 is reachable (local mode: install postgresql-16;"
+    echo "external: edit [database] in the config), then: systemctl start flamejob-server"
+    ;;
+  abort-upgrade|abort-remove|abort-deconfigure)
+    ;;
+esac
+
+exit 0
