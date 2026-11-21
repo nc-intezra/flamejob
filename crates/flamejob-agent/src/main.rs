@@ -15,6 +15,8 @@ use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
+mod gpu;
+
 #[derive(Parser, Debug, Clone)]
 #[command(name = "fj-agent", about = "flamejob distributed worker agent")]
 struct Args {
@@ -40,6 +42,16 @@ struct Args {
     /// hashcat workload profile (1-4).
     #[arg(long, env = "FJ_AGENT_WORKLOAD", default_value_t = 3)]
     workload: u8,
+    /// Disable NVIDIA GPU telemetry (nvidia-smi). GPU metrics are on by default
+    /// when NVIDIA GPUs are detected.
+    #[arg(long, env = "FJ_AGENT_NO_GPU_METRICS")]
+    no_gpu_metrics: bool,
+    /// Actively manage NVIDIA fan speed under load via nvidia-settings — disables
+    /// the driver's auto fan control while a job runs and drives the fan to hold
+    /// the GPU temperature in 85–95% of its max rated temp (needs an X display
+    /// and `Coolbits` enabled). Off by default.
+    #[arg(long, env = "FJ_AGENT_FAN_CONTROL")]
+    fan_control: bool,
 }
 
 #[tokio::main]
@@ -184,6 +196,22 @@ async fn run(args: &Args, cert_pem: String) -> Result<()> {
     ));
     let current: Arc<Mutex<Option<(Uuid, RunHandle)>>> = Arc::new(Mutex::new(None));
 
+    // Detect NVIDIA GPUs once; samples ride along with task progress below.
+    let gpus: Arc<Vec<gpu::Gpu>> = Arc::new(if args.no_gpu_metrics {
+        Vec::new()
+    } else {
+        gpu::detect().await
+    });
+    if gpus.is_empty() {
+        tracing::info!("no NVIDIA GPUs detected (or nvidia-smi unavailable); CPU metrics only");
+    } else {
+        tracing::info!(
+            count = gpus.len(),
+            fan_control = args.fan_control,
+            "NVIDIA GPU telemetry enabled"
+        );
+    }
+
     while let Some(msg) = stream.next().await {
         let msg = match msg {
             Ok(Message::Text(t)) => serde_json::from_str::<ServerMsg>(&t).ok(),
@@ -223,8 +251,21 @@ async fn run(args: &Args, cert_pem: String) -> Result<()> {
                 let current = current.clone();
                 let server = args.server.clone();
                 let cert = cert_pem.clone();
+                let gpus = gpus.clone();
+                let fan_control = args.fan_control;
                 tokio::spawn(async move {
-                    run_task(runner, server, cert, task, out_tx, data_dir, current).await;
+                    run_task(
+                        runner,
+                        server,
+                        cert,
+                        task,
+                        out_tx,
+                        data_dir,
+                        current,
+                        gpus,
+                        fan_control,
+                    )
+                    .await;
                 });
             }
             ServerMsg::Cancel { task_id } => {
@@ -328,6 +369,7 @@ async fn resolve_task(
     Ok((primary, rules))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_task(
     runner: Arc<LocalRunner>,
     server: String,
@@ -336,6 +378,8 @@ async fn run_task(
     out_tx: mpsc::Sender<AgentMsg>,
     data_dir: PathBuf,
     current: Arc<Mutex<Option<(Uuid, RunHandle)>>>,
+    gpus: Arc<Vec<gpu::Gpu>>,
+    fan_control: bool,
 ) {
     let task_id = task.task_id;
     // Materialize the hash lines the server shipped inline.
@@ -397,14 +441,19 @@ async fn run_task(
             })
             .await
             .ok();
-        // Opportunistic host telemetry alongside progress.
-        out_tx
-            .send(AgentMsg::Metrics {
-                samples: vec![host_metric(&mut sys, u.speed)],
-            })
-            .await
-            .ok();
+        // Opportunistic host + GPU telemetry alongside progress.
+        let mut samples = vec![host_metric(&mut sys, u.speed)];
+        let gpu_samples = gpu::sample(&gpus).await;
+        if fan_control && !gpu_samples.is_empty() {
+            gpu::apply_fan_curve(&gpus, &gpu_samples).await;
+        }
+        samples.extend(gpu_samples);
+        out_tx.send(AgentMsg::Metrics { samples }).await.ok();
         last = u.state;
+    }
+    // Load is off; hand the fans back to the driver's automatic control.
+    if fan_control && !gpus.is_empty() {
+        gpu::reset_fans(&gpus).await;
     }
 
     // Ship any cracked results hashcat wrote to the outfile.
