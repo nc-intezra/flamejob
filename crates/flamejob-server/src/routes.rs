@@ -4,7 +4,6 @@ use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::Html;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use chrono::Utc;
 use flamejob_api::*;
 use flamejob_core::{Capability, JobState, TaskState};
@@ -13,6 +12,7 @@ use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use uuid::Uuid;
 
 use crate::auth::{self, AuthUser};

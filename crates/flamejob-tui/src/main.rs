@@ -53,9 +53,13 @@ fn refresh(
     v: &mut View,
     dash: &mut Dashboard,
 ) {
-    if let Ok(d) =
-        rt.block_on(app::fetch_dashboard(client, server, v.selected, v.hide_finished, v.can_submit))
-    {
+    if let Ok(d) = rt.block_on(app::fetch_dashboard(
+        client,
+        server,
+        v.selected,
+        v.hide_finished,
+        v.can_submit,
+    )) {
         v.selected = d.selected;
         *dash = d;
     }

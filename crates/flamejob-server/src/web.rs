@@ -53,10 +53,7 @@ pub fn spawn(state: crate::state::AppState) {
             },
             _ => {
                 tracing::info!(%addr, "flamejob web dashboard listening (http)");
-                if let Err(e) = axum_server::bind(addr)
-                    .serve(app.into_make_service())
-                    .await
-                {
+                if let Err(e) = axum_server::bind(addr).serve(app.into_make_service()).await {
                     tracing::error!(error = %e, "web dashboard (http) stopped");
                 }
             }

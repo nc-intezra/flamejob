@@ -4,8 +4,8 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, BorderType, Borders, Cell, Padding, Paragraph, Row, Scrollbar,
-        ScrollbarOrientation, ScrollbarState, Table,
+        Block, BorderType, Borders, Cell, Padding, Paragraph, Row, Scrollbar, ScrollbarOrientation,
+        ScrollbarState, Table,
     },
     Frame,
 };
@@ -110,8 +110,11 @@ fn jobs_table(f: &mut Frame, area: Rect, d: &Dashboard, st: &mut UiState) {
             } else {
                 DIM
             })),
-            Cell::from(fmt_eta(j.eta, d.now))
-                .style(Style::default().fg(if j.eta.is_some() { WARN } else { DIM })),
+            Cell::from(fmt_eta(j.eta, d.now)).style(Style::default().fg(if j.eta.is_some() {
+                WARN
+            } else {
+                DIM
+            })),
             Cell::from(format!("{}/{}", j.cracked, j.total))
                 .style(Style::default().fg(crack_color(j))),
         ])
@@ -138,8 +141,7 @@ fn jobs_table(f: &mut Frame, area: Rect, d: &Dashboard, st: &mut UiState) {
     if d.jobs.is_empty() {
         st.jobs.select(None);
     } else {
-        st.jobs
-            .select(Some(d.selected.min(d.jobs.len() - 1)));
+        st.jobs.select(Some(d.selected.min(d.jobs.len() - 1)));
     }
     f.render_stateful_widget(table, area, &mut st.jobs);
     // Data rows visible = inner height (area minus borders) minus the header row.
@@ -231,7 +233,13 @@ fn job_detail(f: &mut Frame, area: Rect, d: &Dashboard, st: &mut UiState) {
         &mut st.chunks,
     );
     let visible = (parts[1].height as usize).saturating_sub(1);
-    scrollbar(f, parts[1], d.chunks.len(), visible, st.chunks.selected().unwrap_or(0));
+    scrollbar(
+        f,
+        parts[1],
+        d.chunks.len(),
+        visible,
+        st.chunks.selected().unwrap_or(0),
+    );
 
     // Aggregate keyspace + per-job ETA, computed across the job's chunks.
     let total: i64 = d.chunks.iter().map(|c| c.len).sum();
