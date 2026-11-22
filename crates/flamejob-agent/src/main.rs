@@ -16,6 +16,8 @@ use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
 mod gpu;
+// Windows-only: run as a native Service Control Manager service (counterpart of
+// the Linux systemd unit). Compiled out entirely on non-Windows targets.
 #[cfg(windows)]
 mod service;
 
