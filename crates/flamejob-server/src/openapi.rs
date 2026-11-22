@@ -46,6 +46,7 @@ impl Modify for SecurityAddon {
         crate::routes::list_jobs,
         crate::routes::create_job,
         crate::routes::clear_finished_jobs,
+        crate::routes::list_job_history,
         crate::routes::get_job,
         crate::routes::patch_job,
         crate::routes::list_job_tasks,

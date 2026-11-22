@@ -75,6 +75,28 @@ pub struct JobView {
     pub running_agents: Vec<String>,
 }
 
+/// A finished job as shown in the dashboard's "Completed" tab. Covers jobs that
+/// are still in the live queue in a terminal state AND jobs that were removed by
+/// "Clear finished" (kept in `job_history`). The `hashlist_id` stays valid in
+/// both cases, so the cracked plaintext remains reachable via
+/// `GET /hashlists/{id}/cracked`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct JobHistoryView {
+    pub id: Uuid,
+    pub name: String,
+    /// The hashlist this job cracked (use `GET /hashlists/{id}/cracked`).
+    pub hashlist_id: Uuid,
+    #[schema(value_type = String)]
+    pub state: JobState,
+    pub cracked: i32,
+    pub total: i32,
+    pub created_at: DateTime<Utc>,
+    pub finished_at: Option<DateTime<Utc>>,
+    /// `true` when the job has been cleared from the live queue and now exists
+    /// only in `job_history`; `false` while it is still a terminal live job.
+    pub archived: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct TaskView {
     pub id: Uuid,
@@ -252,7 +274,7 @@ impl Event {
     // so the document served at /openapi.json always matches the release.
     info(
         title = "flamejob",
-        version = "1.4.0",
+        version = "1.5.0",
         description = "Distributed hashcat queue API"
     ),
     components(schemas(
@@ -262,6 +284,7 @@ impl Event {
         JobConfig,
         JobCreate,
         JobView,
+        JobHistoryView,
         TaskView,
         HashlistCreate,
         HashlistView,
