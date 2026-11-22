@@ -42,18 +42,67 @@ struct Inflight {
     handle: RunHandle,
 }
 
+/// Per-job ETA estimator state: the last observed overall progress and when it
+/// was seen, plus a smoothed completion rate (progress fraction per second).
+#[derive(Clone, Copy)]
+struct EtaState {
+    progress: f64,
+    at: DateTime<Utc>,
+    rate: f64,
+}
+
+/// EMA weight for a fresh rate sample (vs. the retained smoothed rate).
+const ETA_EMA_ALPHA: f64 = 0.4;
+/// Minimum elapsed time between rate samples; shorter gaps are too noisy to
+/// divide by, so we keep accumulating against the previous sample.
+const ETA_MIN_DT_SECS: f64 = 0.75;
+/// A gap longer than this (seconds) is treated as a discontinuity (pause/resume,
+/// scheduler restart): the rate is re-baselined rather than inferred from it.
+const ETA_RESET_SECS: i64 = 20;
+
 pub struct Scheduler {
     state: AppState,
     runner: Arc<dyn Runner>,
     inflight: Mutex<HashMap<Uuid, Inflight>>, // task_id -> running chunk
     inputs: Mutex<HashMap<Uuid, Arc<JobInputs>>>, // job_id -> shared inputs
     progress: Mutex<HashMap<Uuid, (f64, i64)>>, // task_id -> (progress, speed) for live ETA
+    eta: Mutex<HashMap<Uuid, EtaState>>,      // job_id -> progress-rate ETA state
     retries: Mutex<HashMap<Uuid, u32>>,       // task_id -> attempts
     max_retries: u32,
     chunk_size: i64,
     max_chunks: i64,
     /// How many jobs may be admitted (running) at once. 0 = unlimited.
     max_concurrent_jobs: usize,
+}
+
+/// Update a job's smoothed completion rate from a new progress observation and
+/// return (new_rate, remaining_secs). `rate` is progress fraction per second.
+/// When `dt_secs` is too small to measure, the previous rate is retained.
+/// Pure so it can be unit-tested without a scheduler/DB.
+fn project_eta(
+    prev_progress: f64,
+    prev_rate: f64,
+    overall: f64,
+    dt_secs: f64,
+) -> (f64, Option<f64>) {
+    let mut rate = prev_rate;
+    if dt_secs >= ETA_MIN_DT_SECS {
+        let inst = (overall - prev_progress) / dt_secs;
+        if inst > 0.0 {
+            rate = if prev_rate > 0.0 {
+                ETA_EMA_ALPHA * inst + (1.0 - ETA_EMA_ALPHA) * prev_rate
+            } else {
+                inst
+            };
+        }
+    }
+    let remaining = if rate > 0.0 && overall < 1.0 {
+        let r = (1.0 - overall) / rate;
+        r.is_finite().then_some(r)
+    } else {
+        None
+    };
+    (rate, remaining)
 }
 
 pub fn spawn(state: AppState) {
@@ -77,6 +126,7 @@ pub fn spawn(state: AppState) {
         inflight: Mutex::new(HashMap::new()),
         inputs: Mutex::new(HashMap::new()),
         progress: Mutex::new(HashMap::new()),
+        eta: Mutex::new(HashMap::new()),
         retries: Mutex::new(HashMap::new()),
         max_retries: 2,
         chunk_size,
@@ -496,8 +546,15 @@ impl Scheduler {
                 .lock()
                 .await
                 .insert(task_id, (u.progress, u.speed));
-            let eta = self.compute_job_eta(job_id).await.or(u.eta);
-            if let Some(eta) = eta {
+            // Observed-rate ETA first; fall back to hashcat's own estimate only
+            // when it's actually in the future. Never store a past timestamp —
+            // that's what rendered as "soon".
+            let now = Utc::now();
+            let eta = self
+                .compute_job_eta(job_id)
+                .await
+                .or_else(|| u.eta.filter(|e| *e > now));
+            if let Some(eta) = eta.filter(|e| *e > now) {
                 let _ = sqlx::query("UPDATE jobs SET est_completion = $1 WHERE id = $2")
                     .bind(eta)
                     .bind(job_id)
@@ -603,9 +660,13 @@ impl Scheduler {
         }
     }
 
-    /// Per-job ETA: remaining keyspace across all not-done chunks (each in-flight
-    /// chunk counted by its remaining fraction) divided by the *combined* speed
-    /// of the chunks currently running — so parallel chunks shorten the ETA.
+    /// Per-job ETA from *observed progress over wall-clock time*. The job's
+    /// overall keyspace-weighted progress is sampled on each update; the rate at
+    /// which that percentage climbs (smoothed) is projected to 100%. This
+    /// reflects real throughput — unlike remaining-keyspace ÷ reported-speed,
+    /// which is wildly optimistic for small/fast jobs (a 23 GH/s rig "finishes"
+    /// an 81M keyspace in milliseconds even while the run visibly takes minutes)
+    /// and so always rounded to "soon". Returns None until a rate is established.
     async fn compute_job_eta(&self, job_id: Uuid) -> Option<DateTime<Utc>> {
         let rows: Vec<(Uuid, String, i64)> =
             sqlx::query_as("SELECT id, state::text, keyspace_len FROM tasks WHERE job_id = $1")
@@ -613,25 +674,84 @@ impl Scheduler {
                 .fetch_all(&self.state.db)
                 .await
                 .ok()?;
+        // Overall progress = done keyspace / total keyspace across all chunks.
         let prog = self.progress.lock().await;
-        let mut remaining = 0f64;
-        let mut speed = 0i64;
-        for (id, state, len) in rows {
-            if state == "done" || len <= 0 {
+        let mut total = 0f64;
+        let mut done = 0f64;
+        for (id, state, len) in &rows {
+            if *len <= 0 {
                 continue;
             }
-            let (p, sp) = prog.get(&id).copied().unwrap_or((0.0, 0));
-            remaining += len as f64 * (1.0 - p.clamp(0.0, 1.0));
-            if state == "running" {
-                speed += sp;
+            let l = *len as f64;
+            total += l;
+            if state == "done" {
+                done += l;
+            } else {
+                let (p, _) = prog.get(id).copied().unwrap_or((0.0, 0));
+                done += l * p.clamp(0.0, 1.0);
             }
         }
         drop(prog);
-        if speed <= 0 || remaining <= 0.0 {
+        if total <= 0.0 {
             return None;
         }
-        let secs = remaining / speed as f64;
-        Some(Utc::now() + chrono::Duration::milliseconds((secs * 1000.0) as i64))
+        let overall = (done / total).clamp(0.0, 1.0);
+        if overall >= 1.0 {
+            return None;
+        }
+
+        let now = Utc::now();
+        let mut states = self.eta.lock().await;
+        let remaining_secs = match states.get(&job_id).copied() {
+            // A long gap (e.g. the job was paused and resumed) makes the old
+            // sample meaningless — re-baseline instead of inferring a near-zero
+            // rate from the elapsed wall time.
+            Some(prev) if (now - prev.at).num_seconds() > ETA_RESET_SECS => {
+                states.insert(
+                    job_id,
+                    EtaState {
+                        progress: overall,
+                        at: now,
+                        rate: 0.0,
+                    },
+                );
+                None
+            }
+            Some(prev) => {
+                let dt = (now - prev.at).num_milliseconds() as f64 / 1000.0;
+                let (rate, remaining) = project_eta(prev.progress, prev.rate, overall, dt);
+                // Only advance the stored sample once enough time has elapsed to
+                // measure, so sub-second bursts of updates don't reset the window.
+                if dt >= ETA_MIN_DT_SECS {
+                    states.insert(
+                        job_id,
+                        EtaState {
+                            progress: overall,
+                            at: now,
+                            rate,
+                        },
+                    );
+                }
+                remaining
+            }
+            None => {
+                states.insert(
+                    job_id,
+                    EtaState {
+                        progress: overall,
+                        at: now,
+                        rate: 0.0,
+                    },
+                );
+                None // need a second sample before we can estimate a rate
+            }
+        };
+        drop(states);
+        let remaining_secs = remaining_secs?;
+        if remaining_secs <= 0.0 {
+            return None;
+        }
+        Some(now + chrono::Duration::milliseconds((remaining_secs * 1000.0) as i64))
     }
 
     /// Finalize any job stuck in `running` with no pending/running chunks left
@@ -688,6 +808,7 @@ impl Scheduler {
     async fn cleanup(&self, job_id: Uuid) {
         self.inflight.lock().await.retain(|_, i| i.job_id != job_id);
         self.inputs.lock().await.remove(&job_id);
+        self.eta.lock().await.remove(&job_id);
     }
 
     /// Drop a finished job's shared inputs once no chunk of it is still running.
@@ -820,7 +941,24 @@ async fn file_path(db: &flamejob_db::Db, id: Uuid) -> anyhow::Result<Option<Stri
 
 #[cfg(test)]
 mod tests {
-    use super::plan_chunks;
+    use super::{plan_chunks, project_eta};
+
+    #[test]
+    fn eta_projects_from_observed_rate() {
+        // No prior rate: first real sample (10% over 10s) -> ~1%/s, ~90s left.
+        let (rate, remaining) = project_eta(0.0, 0.0, 0.10, 10.0);
+        assert!((rate - 0.01).abs() < 1e-9);
+        let r = remaining.expect("rate established -> an estimate");
+        assert!((r - 90.0).abs() < 1e-6, "got {r}");
+
+        // A sub-threshold gap keeps the previous rate and still projects.
+        let (rate2, remaining2) = project_eta(0.10, 0.01, 0.1001, 0.1);
+        assert!((rate2 - 0.01).abs() < 1e-9, "tiny dt retains the rate");
+        assert!(remaining2.unwrap() > 0.0);
+
+        // No progress yet (rate stays 0) -> no estimate.
+        assert_eq!(project_eta(0.0, 0.0, 0.0, 5.0).1, None);
+    }
 
     #[test]
     fn chunking_splits_keyspace() {
