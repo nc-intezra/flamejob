@@ -48,6 +48,16 @@ FJ_AGENT_WORKLOAD=3
 #                              # GPU's rated slowdown temp. At/above it the task
 #                              # is stopped and the agent flagged until it cools.
 #
+# PRIVILEGE: the driver only allows fan control from root or the X server's user.
+# This agent runs unprivileged, so against a root-owned X its fan commands are
+# refused ("Operation not permitted") and the fans stay on auto (the agent logs a
+# one-time warning). Either run the agent as root (a drop-in with [Service]
+# User=root), or keep it unprivileged and let it sudo nvidia-settings:
+#   grant in /etc/sudoers.d/flamejob-fan (mode 440):
+#     flamejob-agent ALL=(root) NOPASSWD: /usr/bin/nvidia-settings
+#   then uncomment:
+#FJ_AGENT_FAN_HELPER=sudo -n
+#
 # IMPORTANT: nvidia-settings needs a running classic *Xorg* server with Coolbits
 # enabled and a DISPLAY this (headless) service can reach. Without the lines below
 # fan control silently no-ops (telemetry still works).

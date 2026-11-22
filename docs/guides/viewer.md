@@ -4,7 +4,7 @@
 
 This guide is for **viewers** — people who need to watch flamejob without changing anything. As a viewer you can see the job queue and each job's progress, follow live updates, and read device and host metrics. You cannot submit or control jobs, upload or import data, or read cracked plaintext — those need the operator role (see the **Operator Guide**), and running the system is covered in the **Administrator Guide**.
 
-You'll use the `fj` command-line client and the `flamejob-tui` dashboard in read-only fashion, against a `flamejobd` an admin has deployed. This guide documents flamejob **1.3.0**.
+You'll use the `fj` command-line client and the `flamejob-tui` dashboard in read-only fashion, against a `flamejobd` an admin has deployed. This guide documents flamejob **1.3.1**.
 
 ## 2. Concepts primer
 

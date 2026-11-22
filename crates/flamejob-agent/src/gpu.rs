@@ -29,10 +29,47 @@ async fn nvidia_smi(args: &[&str]) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-async fn nvidia_settings(args: &[String]) {
-    // Fire-and-forget; requires an X display and a permissive driver. Errors are
-    // expected on headless/unsupported hosts and are intentionally ignored.
-    let _ = Command::new("nvidia-settings").args(args).output().await;
+/// Warn only once if the driver refuses fan control, so a per-tick failure
+/// doesn't flood the log but also isn't swallowed silently.
+static FAN_REFUSED_WARNED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Run `nvidia-settings` (optionally via a `helper` prefix such as `["sudo",
+/// "-n"]`) with the given attribute assignments. Needs an X display and a
+/// permissive driver. A refusal is logged once — see [`FanConfig::helper`] —
+/// rather than silently ignored; other failures (no X, unsupported host) stay
+/// quiet so CPU-only/headless hosts aren't noisy.
+/// Build the `(program, args)` to invoke, applying an optional `helper` prefix
+/// (e.g. `["sudo","-n"]` → run `sudo -n nvidia-settings <args>`).
+fn fan_cmd_parts(helper: &[String], args: &[String]) -> (String, Vec<String>) {
+    if helper.is_empty() {
+        ("nvidia-settings".to_string(), args.to_vec())
+    } else {
+        let mut full = helper[1..].to_vec();
+        full.push("nvidia-settings".to_string());
+        full.extend_from_slice(args);
+        (helper[0].clone(), full)
+    }
+}
+
+async fn nvidia_settings(helper: &[String], args: &[String]) {
+    let (program, full) = fan_cmd_parts(helper, args);
+    let mut cmd = Command::new(program);
+    cmd.args(full);
+    if let Ok(out) = cmd.output().await {
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr);
+            let refused = err.contains("permission") || err.contains("not permitted");
+            if refused && !FAN_REFUSED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                tracing::warn!(
+                    "GPU fan control was refused by the driver (\"Operation not permitted\"). \
+                     nvidia-settings must run as root or as the X server's user; run the agent \
+                     as root, or set FJ_AGENT_FAN_HELPER (e.g. \"sudo -n\"). Logged once; fans \
+                     are left on the driver's automatic control."
+                );
+            }
+        }
+    }
 }
 
 /// Detect NVIDIA GPUs once at startup (index, name, and max/slowdown temp).
@@ -185,7 +222,7 @@ const FAST_RISE: i32 = 3; // °C/tick that earns an extra fan boost
 const MIN_DIFF: i32 = 10; // critical is forced to be at least target + this
 
 /// Operator-supplied fan-control configuration (one set per agent).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct FanConfig {
     pub target_temp: i32,
     pub min_fan: i32,
@@ -197,6 +234,11 @@ pub struct FanConfig {
     /// Memory-junction target; `None` disables VRAM-aware control. Inert until a
     /// memory-temperature sensor is wired in (unsupported on most GeForce cards).
     pub mem_target: Option<i32>,
+    /// Optional command prefix for `nvidia-settings`, e.g. `["sudo", "-n"]`, so
+    /// an unprivileged agent can drive fans on a root-owned X server. Empty runs
+    /// `nvidia-settings` directly (works when the agent runs as root or as the X
+    /// server's user).
+    pub helper: Vec<String>,
 }
 
 /// Resolved per-GPU policy (critical temperature filled in).
@@ -392,18 +434,21 @@ pub async fn drive_fans(
             args.push("-a".to_string());
             args.push(format!("[fan:{fan}]/GPUTargetFanSpeed={pct}"));
         }
-        nvidia_settings(&args).await;
+        nvidia_settings(&cfg.helper, &args).await;
     }
     overheat
 }
 
 /// Hand the fans back to the driver's automatic control (task finished).
-pub async fn reset_fans(gpus: &[Gpu]) {
+pub async fn reset_fans(gpus: &[Gpu], cfg: &FanConfig) {
     for g in gpus {
-        nvidia_settings(&[
-            "-a".into(),
-            format!("[gpu:{}]/GPUFanControlState=0", g.index),
-        ])
+        nvidia_settings(
+            &cfg.helper,
+            &[
+                "-a".into(),
+                format!("[gpu:{}]/GPUFanControlState=0", g.index),
+            ],
+        )
         .await;
     }
 }
@@ -411,9 +456,31 @@ pub async fn reset_fans(gpus: &[Gpu]) {
 #[cfg(test)]
 mod tests {
     use super::{
-        critical_for, decide_fan, parse_fan_handles, parse_sample_line, FanAction, FanPolicy,
-        FanState,
+        critical_for, decide_fan, fan_cmd_parts, parse_fan_handles, parse_sample_line, FanAction,
+        FanPolicy, FanState,
     };
+
+    #[test]
+    fn fan_cmd_applies_helper_prefix() {
+        let a = vec!["-a".to_string(), "x".to_string()];
+        assert_eq!(
+            fan_cmd_parts(&[], &a),
+            ("nvidia-settings".to_string(), vec!["-a".into(), "x".into()])
+        );
+        let helper = vec!["sudo".to_string(), "-n".to_string()];
+        assert_eq!(
+            fan_cmd_parts(&helper, &a),
+            (
+                "sudo".to_string(),
+                vec![
+                    "-n".into(),
+                    "nvidia-settings".into(),
+                    "-a".into(),
+                    "x".into()
+                ]
+            )
+        );
+    }
 
     fn policy() -> FanPolicy {
         // target 75, critical 87 -> span 12; fan 30..100.

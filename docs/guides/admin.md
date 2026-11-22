@@ -6,7 +6,7 @@ flamejob is a distributed hashcat job queue. A single control-plane service, `fl
 
 This guide is for the people who stand that system up and keep it running: the **superadmin** (the local break-glass account) and **admin** roles, plus anyone responsible for deployment, configuration, user and agent management, and monitoring. Running and watching jobs day to day is covered separately in the **Operator Guide** and the **Viewer Guide**.
 
-It documents flamejob **1.3.0**, which replaces the agent's fan curve with a target-temperature **closed-loop fan controller** and an overheat fail-safe (§7). It builds on 1.2.x (revocable **API keys** for programmatic access (§14), per-GPU hashrate) and 1.1.x (NVIDIA GPU telemetry, a reworked dashboard — hash-mode autodetection, clearer errors, an OLED-black theme) and 1.0.x (many jobs across many agents in parallel, browser job submission, a cracked-password view (§13), and live agent status). Directory-mapped (LDAP/AD) RBAC remains on the roadmap and is flagged as planned where it comes up.
+It documents flamejob **1.3.1**, which makes GPU fan control usable from an unprivileged agent: an `FJ_AGENT_FAN_HELPER` knob to run `nvidia-settings` via `sudo`, a one-time log warning when the driver refuses a fan command (instead of failing silently), and the full headless Coolbits/dedicated-Xorg setup documented (§7). It builds on 1.3.0's target-temperature **closed-loop fan controller** and overheat fail-safe, 1.2.x (revocable **API keys** (§14), per-GPU hashrate), 1.1.x (NVIDIA GPU telemetry, a reworked dashboard — hash-mode autodetection, clearer errors, an OLED-black theme), and 1.0.x (many jobs across many agents in parallel, browser job submission, a cracked-password view (§13), live agent status). Directory-mapped (LDAP/AD) RBAC remains on the roadmap and is flagged as planned where it comes up.
 
 ## 2. Concepts primer
 
@@ -51,11 +51,11 @@ There are four ways to run flamejob; the `.deb` packages are the recommended pat
 
 ```
 # control-plane host
-sudo apt install ./flamejob-server_1.3.0-1_amd64.deb \
-                 ./flamejob-cli_1.3.0-1_amd64.deb \
-                 ./flamejob-tui_1.3.0-1_amd64.deb
+sudo apt install ./flamejob-server_1.3.1-1_amd64.deb \
+                 ./flamejob-cli_1.3.1-1_amd64.deb \
+                 ./flamejob-tui_1.3.1-1_amd64.deb
 # a GPU worker
-sudo apt install ./flamejob-agent_1.3.0-1_amd64.deb
+sudo apt install ./flamejob-agent_1.3.1-1_amd64.deb
 ```
 
 Installing `flamejob-server` sets up a complete server: it creates the `flamejob` system user, generates `jwt.key` and `plain.key`, writes a default **local-mode** `/etc/flamejob/flamejob.toml` (only if one isn't already present, so upgrades keep your edits), installs the systemd unit, and **enables** the service. It does not *start* it — the database must be reachable first (see First boot). Edit the config for an external database or the remote runner before starting. `apt purge flamejob-server` removes the generated config and keys.
@@ -138,7 +138,7 @@ In practice: **admins manage people and agents but cannot run jobs or read crack
 
 **Creating users.** `POST /admin/users` (requires `ManageUsers`) takes a username, a password and a list of roles and creates a local account. The `fj` CLI handles login and identity (`fj login`, `fj whoami`) but does not wrap user creation — call the endpoint directly (for example with `curl` and an admin token) or from your own tooling.
 
-**The break-glass superadmin.** The `superadmin` seeded on first boot (§4) is a local account for bootstrapping and emergencies. Once it exists, log in as it and create named admin and operator accounts rather than sharing it. Version 1.3.0 ships account *creation* but not a password-change or disable endpoint, so rotating the superadmin password — or disabling any account — is a database operation today (the `users` table carries a `disabled` flag that login honours). Treat that as the current rotation path until later releases add self-service.
+**The break-glass superadmin.** The `superadmin` seeded on first boot (§4) is a local account for bootstrapping and emergencies. Once it exists, log in as it and create named admin and operator accounts rather than sharing it. Version 1.3.1 ships account *creation* but not a password-change or disable endpoint, so rotating the superadmin password — or disabling any account — is a database operation today (the `users` table carries a `disabled` flag that login honours). Treat that as the current rotation path until later releases add self-service.
 
 **Directory integration (roadmap).** The `ManageDirectory` capability and the installer's directory prompt are placeholders for planned LDAP/AD-mapped RBAC (Phase 5). Until then, all roles come from the local `user_roles` table.
 
@@ -175,7 +175,7 @@ Log verbosity is set with `FJ_LOG`. Note the agent's default `--server` port (`8
 
 **Monitoring the fleet.** `GET /agents` (requires `ViewStats`) lists enrolled workers with status and timestamps. Status moves through `enrolled` (certificate issued, never connected), `online` (connected now), `offline` (disconnected), and `revoked` (certificate refused at connect).
 
-**Transport security.** The issued certificates are intended for mutual TLS, but in 1.3.0 the agent WebSocket (`/agent/stream`) and the agent file-download endpoint (`/agent/files/{id}`) both authenticate at the *application* layer — by certificate fingerprint — and do not themselves terminate transport TLS. For anything beyond a trusted network, terminate TLS in front of `flamejobd` with a rustls acceptor or a reverse proxy.
+**Transport security.** The issued certificates are intended for mutual TLS, but in 1.3.1 the agent WebSocket (`/agent/stream`) and the agent file-download endpoint (`/agent/files/{id}`) both authenticate at the *application* layer — by certificate fingerprint — and do not themselves terminate transport TLS. For anything beyond a trusted network, terminate TLS in front of `flamejobd` with a rustls acceptor or a reverse proxy.
 
 **File distribution.** As of 1.0.3 the control plane distributes wordlist and rule files to agents automatically. When a chunk task references a wordlist or rule (by file id), the agent fetches it from the control plane over `GET /agent/files/{id}` — authenticated with the same client certificate it uses on the WebSocket — and caches it under `{data_dir}/cache/{id}`, re-using the cached copy on later tasks. Mask attacks carry the mask string inline and need no download. So a wordlist attack in remote mode no longer requires pre-staging files on each agent; the first agent to run a chunk pulls the file on demand.
 
@@ -286,7 +286,7 @@ When agents are connected (§7) they push their own device telemetry up the WebS
 
 ### Command-line reference (all tools)
 
-flamejob ships four executables. `flamejobd`, `flamejob-tui` and `fj-agent` take no subcommands and are driven by flags and environment variables; `fj` is the subcommand-based client. Every documented flag and variable below is exhaustive for 1.3.0 — if a capability isn't listed here, it isn't exposed on the CLI yet.
+flamejob ships four executables. `flamejobd`, `flamejob-tui` and `fj-agent` take no subcommands and are driven by flags and environment variables; `fj` is the subcommand-based client. Every documented flag and variable below is exhaustive for 1.3.1 — if a capability isn't listed here, it isn't exposed on the CLI yet.
 
 #### `flamejobd` — control-plane server
 
@@ -332,7 +332,7 @@ Takes **no arguments or subcommands**. All behaviour comes from configuration (b
 - `--mask <str>` — a hashcat mask (e.g. `?a?a?a?a`) for a mask / brute-force attack; pair with `-a 3`. Masks travel inline to agents, so they need no file distribution.
 - `--rule <id|path>` — a rule file for a dictionary attack (`-a 0`): an uploaded file id (UUID) or a local path, uploaded for you as kind `rule`. Repeatable — pass `--rule` several times to apply rule files in order. Rules are distributed to remote agents like wordlists (§7, *File distribution*).
 - `--priority <int>` — queue order, lower first; default `100`.
-- *Not exposed as a flag in 1.3.0:* raw extra hashcat arguments exist in the API's job config but have no `fj` flag yet; submit those via the API directly if needed.
+- *Not exposed as a flag in 1.3.1:* raw extra hashcat arguments exist in the API's job config but have no `fj` flag yet; submit those via the API directly if needed.
 
 **Hashlists** (`fj hashlist <sub>`)
 
@@ -384,6 +384,7 @@ Takes **no subcommands**; enrollment and connection are automatic (§7). Flags a
 | `--fan-deadband` | `FJ_AGENT_FAN_DEADBAND` | `2` | Dead band (°C) around the target within which the fan is left unchanged. |
 | `--fan-down-step` | `FJ_AGENT_FAN_DOWN_STEP` | `5` | Maximum fan decrease (%) per tick (gentle ramp-down). |
 | `--fan-mem-target` | `FJ_AGENT_FAN_MEM_TARGET` | unset | Memory-junction target (°C) for VRAM-aware control. Inert until a GeForce memory-temp sensor is wired in. |
+| `--fan-helper` | `FJ_AGENT_FAN_HELPER` | empty | Command prefix to run `nvidia-settings` through, e.g. `sudo -n`, so an **unprivileged** agent can drive fans on a root-owned X server. Empty runs it directly (needs the agent to run as root or as the X server's user). See "Why fan control needs privilege" below. |
 
 Log verbosity is set with `FJ_LOG`, as for `flamejobd`.
 
@@ -420,6 +421,20 @@ sudo -u flamejob-agent DISPLAY=:0 XAUTHORITY=/path/to/Xorg/auth/file \
 ```
 
 A clean return (no "unable to …" / "no protocol specified") means the agent can drive fans too. Confirm from the agent log (`journalctl -u flamejob-agent`) that it reports `fan_control=true` at startup.
+
+**Why fan control needs privilege.** NVIDIA only permits `GPUFanControlState`/`GPUTargetFanSpeed` writes from a client running **as root, or as the same user the X server runs as**. The packaged agent runs unprivileged (`flamejob-agent`), so against a root-owned X server its fan commands are refused with *"Operation not permitted for the current user"* — the fans silently stay on the driver's auto curve. (Since 1.3.1 the agent logs this once as a warning rather than swallowing it; `nvidia-smi` telemetry is unaffected and keeps working.) A quick way to see the gate: `nvidia-settings -a '[gpu:0]/GPUFanControlState=1'` succeeds as root but fails as `flamejob-agent` against the same display. Two ways to resolve it:
+
+- **Run the agent as root** (simplest on a dedicated rig): a drop-in `/etc/systemd/system/flamejob-agent.service.d/20-root.conf` containing `[Service]\nUser=root`, then `systemctl daemon-reload && systemctl restart flamejob-agent`.
+- **Keep it unprivileged with `FJ_AGENT_FAN_HELPER`**: grant the agent `sudo` for just `nvidia-settings` (`/etc/sudoers.d/flamejob-fan`: `flamejob-agent ALL=(root) NOPASSWD: /usr/bin/nvidia-settings`, mode 440) and set `FJ_AGENT_FAN_HELPER=sudo -n` in `agent.env`. The agent then runs every fan command as `sudo -n nvidia-settings …`.
+
+**Headless setup: a dedicated Xorg with Coolbits.** On a GPU box with no monitor you typically take the desktop out of the way and run a small Xorg the agent targets. The essentials:
+
+1. Free the GPU of the desktop: `systemctl disable --now gdm3 && systemctl set-default multi-user.target`.
+2. Generate a Coolbits config and, crucially, give each headless GPU a **virtual display** — on GeForce cards the driver refuses fan control unless the GPU is driving a display head, so `AllowEmptyInitialConfiguration` alone (which leaves a `NULL` mode) is not enough. Add `Option "ConnectedMonitor" "DFP-0"` plus a `Monitor` (with `HorizSync`/`VertRefresh`) and a real `Modes "1024x768"` per GPU so each card lights a virtual head. `nvidia-xconfig --enable-all-gpus --cool-bits=28 --allow-empty-initial-configuration -o /etc/X11/xorg-flamejob.conf` is the starting point; add the ConnectedMonitor/Monitor/Modes bits.
+3. Run that Xorg as a service (`Xorg :0 -auth /run/flamejob-xorg.auth -config /etc/X11/xorg-flamejob.conf -nolisten tcp`), generating a cookie in an `ExecStartPre` that is group-readable by `flamejob-agent`.
+4. Point `agent.env` at it: `DISPLAY=:0`, `XAUTHORITY=/run/flamejob-xorg.auth` (plus the privilege fix above). Verify the log shows the GPUs set a `1024x768` mode (not `NULL`), and that `nvidia-smi` shows `Disp.A = On` with `Xorg` attached to each GPU.
+
+Note that `XAUTHORITY` has no fixed location on modern distros (GDM/Wayland uses a random `/run/user/<uid>/.mutter-Xwaylandauth.*`); find the live server's auth file with `ps -C Xorg -o args= | grep -o '\-auth[= ][^ ]*'`, or use the dedicated-Xorg cookie above.
 
 ### REST API
 
@@ -500,6 +515,6 @@ curl -H "Authorization: Bearer fj_<your-key>" https://control-plane:8443/jobs
 
 The server recognises the `fj_` prefix, looks the key up by hash, and authenticates the request **as the owning user with that user's current roles** — so a key is exactly as privileged as the person who created it, and role changes take effect immediately (roles are resolved live, not frozen into the key). Each use stamps the key's `last_used_at`.
 
-**Scope & lifecycle.** Keys are per-user: you can only see, create and revoke your own. A key stops working the instant it is revoked or expires, and — unlike JWTs — keys are **not** invalidated by rotating `[auth].jwt_secret`, since they're validated against the database rather than signed. There is no server-wide key list in 1.3.0; an admin who needs to cut off a departed user should disable that user (the `users.disabled` flag), which blocks their keys as well as their login.
+**Scope & lifecycle.** Keys are per-user: you can only see, create and revoke your own. A key stops working the instant it is revoked or expires, and — unlike JWTs — keys are **not** invalidated by rotating `[auth].jwt_secret`, since they're validated against the database rather than signed. There is no server-wide key list in 1.3.1; an admin who needs to cut off a departed user should disable that user (the `users.disabled` flag), which blocks their keys as well as their login.
 
 **Storage.** Keys live in the `api_keys` table (migration `0004`): `user_id`, `name`, a non-secret display `prefix`, the unique `key_hash` (hex SHA-256), `created_at`, nullable `expires_at` and `last_used_at`, and a `revoked` flag. Deleting a user cascades to their keys.
