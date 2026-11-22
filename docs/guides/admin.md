@@ -396,15 +396,26 @@ Since 1.3.0 the fan controller is a **target-temperature closed loop**: it holds
 ```sh
 FJ_AGENT_FAN_CONTROL=true
 FJ_AGENT_FAN_TARGET=75
-# DISPLAY / XAUTHORITY are required (see below) on a headless box:
+# DISPLAY / XAUTHORITY are required on a headless box (see below):
 DISPLAY=:0
-XAUTHORITY=/var/run/lightdm/root/:0
+XAUTHORITY=/path/to/Xorg/auth/file   # find it with the ps command below
 ```
 
-Because the service is **headless**, `nvidia-settings` has no X server to talk to by default, so with only `FJ_AGENT_FAN_CONTROL=true` the controller **silently no-ops** (telemetry still flows). To actually move fans you must: run an X server with **Coolbits** enabled (`sudo nvidia-xconfig --cool-bits=28`, or `Option "Coolbits" "28"` in `xorg.conf`); set `DISPLAY`/`XAUTHORITY` in `agent.env` to point at it; and let the `flamejob-agent` user reach it (a shared `XAUTHORITY`, or `xhost +si:localuser:flamejob-agent`). On a box with no monitor, run a minimal/dummy X server for this. Verify the plumbing as that user:
+Because the service is **headless**, `nvidia-settings` has no X server to talk to by default, so with only `FJ_AGENT_FAN_CONTROL=true` the controller **silently no-ops** (telemetry still flows). To move fans you need a running classic **Xorg** server with **Coolbits** enabled, reachable by the `flamejob-agent` user:
+
+- **Wayland won't work.** `nvidia-settings` drives Xorg, not Wayland, and modern distros default to a Wayland session (e.g. GDM on Ubuntu 22.04+/24.04). Either select an "Xorg" login session, or — the robust choice for a headless rig — run a dedicated Xorg for the agent: `sudo nvidia-xconfig --enable-all-gpus --cool-bits=28` (or `Option "Coolbits" "28"` in `xorg.conf`), start a minimal X on its own display at boot, and point `agent.env` at it.
+- **`XAUTHORITY` has no fixed path** (it is *not* a stable constant like the old LightDM `/var/run/lightdm/root/:0`; on Wayland it's a random `/run/user/<uid>/.mutter-Xwaylandauth.XXXXXX`). Read the live server's auth file from its command line:
+
+  ```sh
+  ps -C Xorg -o args= | grep -o '\-auth[= ][^ ]*'
+  ```
+
+  Put that path in `XAUTHORITY`, and let the agent user read it (a shared `XAUTHORITY`, or `xhost +si:localuser:flamejob-agent`).
+
+Verify the plumbing as that user (substitute your real `DISPLAY`/`XAUTHORITY`):
 
 ```sh
-sudo -u flamejob-agent DISPLAY=:0 XAUTHORITY=/var/run/lightdm/root/:0 \
+sudo -u flamejob-agent DISPLAY=:0 XAUTHORITY=/path/to/Xorg/auth/file \
      nvidia-settings -a '[gpu:0]/GPUFanControlState=1'
 ```
 
