@@ -114,10 +114,10 @@ pub fn dispatch(args: &[String]) -> Result<()> {
                  stop       stop the installed service\n\
                  write-env  write %ProgramData%\\flamejob-agent\\agent.env (used by the installer)"
             );
-            if other.is_some() {
-                anyhow::bail!("unknown service subcommand: {:?}", other.unwrap());
+            match other {
+                Some(cmd) => anyhow::bail!("unknown service subcommand: {cmd:?}"),
+                None => Ok(()),
             }
-            Ok(())
         }
     }
 }
