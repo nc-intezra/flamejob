@@ -391,6 +391,25 @@ Log verbosity is set with `FJ_LOG`, as for `flamejobd`.
 
 Since 1.3.0 the fan controller is a **target-temperature closed loop**: it holds each GPU's core at `--fan-target` (default 75 °C) rather than chasing a fraction of the rated ceiling. It uses a dead band so it doesn't fidget near the target, trend damping (ramps up quickly, eases down at most `--fan-down-step` %/tick, with an extra boost on a fast rise), and drives every fan on multi-fan cards. If a card reaches its critical temperature (`--fan-critical`, by default just below the rated slowdown temp) the agent maxes its fans, **stops the running task, and reports an error** so the scheduler requeues that chunk; it resumes accepting work once the card cools. A memory-junction target (`--fan-mem-target`) is wired in for VRAM-aware control but is inert for now, because `nvidia-smi` doesn't expose memory temperature on most GeForce cards. Tune the target for your priorities: lower runs cooler (longer component life) at the cost of more fan noise/wear; the default 75 °C is a middle ground.
 
+**Enabling it under systemd.** The packaged agent runs as the `flamejob-agent` user and reads `/etc/flamejob-agent/agent.env` (`EnvironmentFile`). That file ships with a commented fan-control block; uncomment and tune it, then `systemctl restart flamejob-agent`:
+
+```sh
+FJ_AGENT_FAN_CONTROL=true
+FJ_AGENT_FAN_TARGET=75
+# DISPLAY / XAUTHORITY are required (see below) on a headless box:
+DISPLAY=:0
+XAUTHORITY=/var/run/lightdm/root/:0
+```
+
+Because the service is **headless**, `nvidia-settings` has no X server to talk to by default, so with only `FJ_AGENT_FAN_CONTROL=true` the controller **silently no-ops** (telemetry still flows). To actually move fans you must: run an X server with **Coolbits** enabled (`sudo nvidia-xconfig --cool-bits=28`, or `Option "Coolbits" "28"` in `xorg.conf`); set `DISPLAY`/`XAUTHORITY` in `agent.env` to point at it; and let the `flamejob-agent` user reach it (a shared `XAUTHORITY`, or `xhost +si:localuser:flamejob-agent`). On a box with no monitor, run a minimal/dummy X server for this. Verify the plumbing as that user:
+
+```sh
+sudo -u flamejob-agent DISPLAY=:0 XAUTHORITY=/var/run/lightdm/root/:0 \
+     nvidia-settings -a '[gpu:0]/GPUFanControlState=1'
+```
+
+A clean return (no "unable to …" / "no protocol specified") means the agent can drive fans too. Confirm from the agent log (`journalctl -u flamejob-agent`) that it reports `fan_control=true` at startup.
+
 ### REST API
 
 Every route and the capability it requires. The authoritative, always-current contract is the OpenAPI document at `GET /openapi.json`.
