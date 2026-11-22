@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  flamejob-agent Windows installer (WiX Toolset v4/v5, open source).
+
+  Builds an MSI that:
+    * installs fj-agent.exe to %ProgramFiles%\flamejob
+    * creates %ProgramData%\flamejob-agent and lays down an editable agent.env
+      template (never overwritten on upgrade/repair, so edits survive)
+    * registers the "flamejob-agent" Windows service (auto-start) whose image
+      path is `fj-agent.exe service run`, and stops/removes it on uninstall
+
+  The enrolled client certificate under %ProgramData%\flamejob-agent\pki is NOT
+  tracked by the MSI, so it (and the data dir) survive an uninstall, mirroring
+  the Linux package leaving /var/lib/flamejob-agent in place.
+
+  Build (see .github/workflows/release.yml):
+    wix build deploy/windows/flamejob-agent.wxs ^
+      -d Version=<x.y.z> -d AgentExe=target\release\fj-agent.exe ^
+      -o flamejob-agent-<x.y.z>-x64.msi
+
+  Unattended configuration (GPO/Intune/scripted): install silently, then bake
+  the config with the agent itself and start the service, e.g.
+    msiexec /i flamejob-agent-<x.y.z>-x64.msi /qn
+    "%ProgramFiles%\flamejob\fj-agent.exe" service write-env ^
+      --server https://control-plane:8443 --name gpu-box-1 ^
+      --claim-token <token> --force
+    sc start flamejob-agent
+-->
+<?ifndef Version?>
+  <?define Version="0.0.0"?>
+<?endif?>
+<?ifndef AgentExe?>
+  <?define AgentExe="..\\..\\target\\release\\fj-agent.exe"?>
+<?endif?>
+
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="flamejob agent"
+      Manufacturer="nc-intezra"
+      Version="$(var.Version)"
+      UpgradeCode="7D9F1C3A-2B4E-4E8A-9C2D-0F1A2B3C4D5E"
+      Scope="perMachine"
+      Compressed="yes">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of flamejob agent is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- %ProgramFiles%\flamejob\fj-agent.exe -->
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="flamejob" />
+    </StandardDirectory>
+
+    <!-- %ProgramData%\flamejob-agent\ (config + runtime data root) -->
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="DATAFOLDER" Name="flamejob-agent" />
+    </StandardDirectory>
+
+    <!-- The worker binary and its Windows service. -->
+    <Component Id="C_Agent" Directory="INSTALLFOLDER" Guid="*">
+      <File Id="fj_agent.exe" Name="fj-agent.exe" Source="$(var.AgentExe)" KeyPath="yes" />
+
+      <ServiceInstall
+          Id="svc_install"
+          Name="flamejob-agent"
+          DisplayName="flamejob GPU worker agent"
+          Description="Runs hashcat chunk tasks for a flamejob control plane and reports GPU/host telemetry."
+          Type="ownProcess"
+          Start="auto"
+          ErrorControl="normal"
+          Arguments="service run"
+          Account="LocalSystem"
+          Vital="yes" />
+
+      <!-- Stop on upgrade/uninstall; remove the service registration on uninstall. -->
+      <ServiceControl
+          Id="svc_control"
+          Name="flamejob-agent"
+          Stop="both"
+          Remove="uninstall"
+          Wait="yes" />
+    </Component>
+
+    <!-- Config/data dir and the editable agent.env template. NeverOverwrite so
+         an admin's edits (and an unattended `write-env --force`) are preserved
+         across upgrades and repairs. -->
+    <Component Id="C_AgentEnv" Directory="DATAFOLDER" Guid="2F6B8E10-9C4D-4A77-B3E2-1A2B3C4D5E6F" NeverOverwrite="yes">
+      <File Id="agent.env" Name="agent.env" Source="agent.env.template" KeyPath="yes" />
+    </Component>
+
+    <Feature Id="Main" Title="flamejob agent" Level="1">
+      <ComponentRef Id="C_Agent" />
+      <ComponentRef Id="C_AgentEnv" />
+    </Feature>
+  </Package>
+</Wix>

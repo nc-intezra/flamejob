@@ -70,6 +70,12 @@ fj-agent --server http://control-plane:8099 --name gpu-box-1 \
          --claim-token <token> --hashcat /usr/bin/hashcat
 ```
 
+Agents run on **Linux** (`.deb`, systemd) and **Windows** (NVIDIA; MSI + a native
+Windows service) from the same binary and version. For a Windows worker see
+[docs/guides/windows-agent.md](docs/guides/windows-agent.md). Active GPU fan
+control is Linux-only; Windows reports GPU telemetry but leaves fans to the
+driver.
+
 Enrollment (`POST /agent/enroll`) signs the agent's CSR with the server CA
 (persisted under `{data_dir}/pki`) and returns the issued client certificate.
 Agents then open `WS /agent/stream`, authenticate by presenting that
