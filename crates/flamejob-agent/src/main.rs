@@ -81,6 +81,12 @@ struct Args {
     /// X server's own user.
     #[arg(long, env = "FJ_AGENT_FAN_HELPER")]
     fan_helper: Option<String>,
+    /// Interval (seconds) at which the agent reports device telemetry while it is
+    /// idle (no task running), so the dashboard keeps tracking temps/fans/clocks/
+    /// hashrate live between jobs instead of freezing on the last in-job sample.
+    /// While a task runs, telemetry streams alongside progress instead. Min 1.
+    #[arg(long, env = "FJ_AGENT_METRICS_INTERVAL_SECS", default_value_t = 5)]
+    metrics_interval_secs: u64,
 }
 
 #[tokio::main]
@@ -256,6 +262,38 @@ async fn run(args: &Args, cert_pem: String) -> Result<()> {
             .map(|s| s.split_whitespace().map(String::from).collect())
             .unwrap_or_default(),
     });
+
+    // Idle telemetry heartbeat. The in-task loop in run_task only emits metrics
+    // while hashcat is running, so once a task completes/pauses/cancels the
+    // server's last agent sample would otherwise stay frozen on the dashboard.
+    // This loop samples host + GPU telemetry on a fixed interval and ships it
+    // whenever no task is running, mirroring the server's local collector so
+    // agent-connected hardware stays live between jobs. It yields to run_task
+    // while a task is active (richer samples there carry per-card hashrate and
+    // drive fan control), and reports hashrate 0 when idle.
+    {
+        let out_tx = out_tx.clone();
+        let current = current.clone();
+        let gpus = gpus.clone();
+        let interval = std::time::Duration::from_secs(args.metrics_interval_secs.max(1));
+        tokio::spawn(async move {
+            let mut sys = sysinfo::System::new();
+            let mut ticker = tokio::time::interval(interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticker.tick().await;
+                // A task is running: run_task is already streaming telemetry.
+                if current.lock().await.is_some() {
+                    continue;
+                }
+                let mut samples = vec![host_metric(&mut sys, 0)];
+                samples.extend(gpu::sample(&gpus).await);
+                if out_tx.send(AgentMsg::Metrics { samples }).await.is_err() {
+                    break; // outgoing pump closed: connection is gone
+                }
+            }
+        });
+    }
 
     while let Some(msg) = stream.next().await {
         let msg = match msg {

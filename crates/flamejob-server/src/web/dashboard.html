@@ -13,6 +13,10 @@
     --bg:#18191e; --panel:#21232a; --panel2:#1d1f26; --ink:#cdd2dc; --dim:#787e8c;
     --accent:#61afef; --good:#98c379; --warn:#e5c07b; --bad:#e06c77; --busy:#e0a35e;
     --sel:#2d3240; --track:#373a44; --border:#2a2d36;
+    /* Vertical slice (≈ one select field tall) handed from the top regions
+       (Jobs / Job detail) down to the mid regions (Submit / Devices), so the
+       Submit form fits without its own scrollbar in a windowed 1080p viewport. */
+    --region-shift:40px;
     /* flame gradient behind the wordmark — dark theme: orange-red */
     --flame1:#ff3b00; --flame2:#ffc400; --flame-opacity:.85;
     --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
@@ -98,8 +102,12 @@
      each half-width), then full-width Agents / Admin. */
   main{display:flex;flex-direction:column;gap:10px;flex:1;min-height:0;overflow:auto}
   .region{display:grid;gap:10px;min-height:0}
+  /* The two regions grow 2:1 from a 0 basis; giving the mid region a fixed
+     flex-basis shifts a fixed slice into it regardless of viewport height. With
+     a 2:1 grow split, a basis of 1.5×shift nets exactly `--region-shift` moved
+     from the top region into the mid region (shift = basis × grow_top_fraction). */
   .region-top{grid-template-columns:1.5fr 1fr;flex:2 1 0}
-  .region-mid{grid-template-columns:1fr 1fr;flex:1 1 0}
+  .region-mid{grid-template-columns:1fr 1fr;flex:1 1 calc(var(--region-shift) * 1.5)}
   .region-mid.one{grid-template-columns:1fr}
   .panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;display:flex;flex-direction:column;min-height:0;overflow:hidden}
   .panel > .head{display:flex;align-items:center;justify-content:space-between;
@@ -147,11 +155,13 @@
     color:var(--dim);cursor:pointer;font-size:12px;transition:border-color .15s,color .15s}
   .drop.hover,.drop.has{border-color:var(--accent);color:var(--ink)}
   .drop .det{display:block;color:var(--accent);font-size:11px;margin-top:3px}
-  /* Submit panel: fields on the left, a full-height square submit button on the
-     right, so the form stays compact and needs no scrolling. */
-  .submit-layout{display:flex;gap:10px;align-items:stretch;padding:8px 10px}
-  .submit-main{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:8px}
-  .submit-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 10px}
+  /* Submit panel: a full-width drop zone on top, then the field grid with the
+     submit button beside it. The button's top lines up with the first field
+     (Job name) and it stretches the height of the grid only — it no longer runs
+     up the full height alongside the drop zone. */
+  .submit-layout{display:flex;flex-direction:column;gap:8px;padding:8px 10px}
+  .submit-fields{display:flex;gap:10px;align-items:stretch}
+  .submit-grid{flex:1 1 auto;min-width:0;display:grid;grid-template-columns:1fr 1fr;gap:8px 10px}
   .fld{display:flex;flex-direction:column;gap:3px;min-width:0}
   .fld.wide{grid-column:1 / -1}
   .fld label{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}
@@ -702,8 +712,8 @@ function renderSubmit(){
   const modeOpts = HASH_MODES.map(([m,n])=>`<option value="${m}">${m} — ${n}</option>`).join("")+`<option value="other">Other…</option>`;
   b.innerHTML = `
     <div class="submit-layout">
-      <div class="submit-main">
-        <div class="drop" id="drop">Drop a hash file here, or click to choose<input type="file" id="hashFile" style="display:none"></div>
+      <div class="drop" id="drop">Drop a hash file here, or click to choose<input type="file" id="hashFile" style="display:none"></div>
+      <div class="submit-fields">
         <div class="submit-grid">
           <div class="fld wide"><label>Job name</label><input id="jobName" placeholder="(auto from filename)"></div>
           <div class="fld"><label>Hash mode (-m)</label><select id="hashMode">${modeOpts}</select></div>
@@ -713,8 +723,8 @@ function renderSubmit(){
           <div class="fld" id="wordlistFld" style="display:none"><label>Wordlist</label><select id="wordlist"></select></div>
           <div class="fld" id="ruleFld" style="display:none"><label>Rule (optional)</label><select id="rule"><option value="">(none)</option></select></div>
         </div>
+        <button class="go submit-square" id="submitJobBtn"><span class="sq-arrow">▶</span><span>Submit to agents</span></button>
       </div>
-      <button class="go submit-square" id="submitJobBtn"><span class="sq-arrow">▶</span><span>Submit to agents</span></button>
     </div>
     <div class="result" id="submitOut"></div>`;
   const drop=document.getElementById("drop"), file=document.getElementById("hashFile");
