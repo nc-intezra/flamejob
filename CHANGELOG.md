@@ -4,6 +4,31 @@ All notable changes to flamejob are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-11-21
+
+Replaces the agent's fan curve with a target-temperature closed-loop controller
+and an overheat fail-safe.
+
+### Changed
+- **Closed-loop fan control.** With `--fan-control`, the agent now holds each
+  GPU's core at a configurable target (default 75 °C) instead of chasing the old
+  85–95 %-of-rated band. The controller adds a dead band, trend damping (ramp up
+  fast, coast down slowly, boost on a fast rise), and an asymmetric slew limit —
+  adapted clean-room from the HiveOS autofan approach. New agent flags:
+  `--fan-target`, `--fan-min`, `--fan-max`, `--fan-critical`, `--fan-deadband`,
+  `--fan-down-step`, and `--fan-mem-target` (with matching `FJ_AGENT_FAN_*`
+  env vars).
+- Multi-fan cards now have **every** fan driven, not just `[fan:<gpu-index>]`.
+
+### Added
+- **Overheat protection.** If a GPU reaches its critical temperature (default
+  just below the rated slowdown temp), the agent maxes the fans, stops the task,
+  and reports an error so the scheduler requeues the chunk elsewhere; it recovers
+  once the card cools.
+- A VRAM-aware control hook (`--fan-mem-target`) is wired into the controller but
+  **inert** for now — `nvidia-smi` doesn't expose memory-junction temperature on
+  most GeForce cards, which is exactly where it would matter.
+
 ## [1.2.0] - 2026-11-21
 
 Adds revocable API keys for programmatic access, fixes per-GPU hashrate
@@ -300,6 +325,7 @@ fleet, all over one OpenAPI-described API.
   self-contained over the wire, while wordlist attacks assume the file is
   present on the agent.
 
+[1.3.0]: https://github.com/nc-intezra/flamejob/releases/tag/v1.3.0
 [1.2.0]: https://github.com/nc-intezra/flamejob/releases/tag/v1.2.0
 [1.1.0]: https://github.com/nc-intezra/flamejob/releases/tag/v1.1.0
 [1.0.6]: https://github.com/nc-intezra/flamejob/releases/tag/v1.0.6

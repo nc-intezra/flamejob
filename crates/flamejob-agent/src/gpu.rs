@@ -6,6 +6,7 @@
 //! log nothing noisy and simply return empty / no-op, so the agent runs fine on
 //! CPU-only hosts.
 use flamejob_api::agent::AgentMetric;
+use std::collections::HashMap;
 use tokio::process::Command;
 
 #[derive(Clone, Debug)]
@@ -14,6 +15,10 @@ pub struct Gpu {
     /// Slowdown (thermal-throttle) temperature in °C, treated as the "max rated"
     /// temperature for fan control. 0 when unknown.
     pub max_temp: i32,
+    /// Global `nvidia-settings` fan handles driven by this GPU (e.g. `[0]`, or
+    /// `[0, 1]` on a multi-fan card). Defaults to `[index]` when the fan list
+    /// can't be determined.
+    pub fans: Vec<u32>,
 }
 
 async fn nvidia_smi(args: &[&str]) -> Option<String> {
@@ -45,9 +50,57 @@ pub async fn detect() -> Vec<Gpu> {
             None => continue,
         };
         let max_temp = slowdown_temp(index).await;
-        gpus.push(Gpu { index, max_temp });
+        let fans = detect_fans(index).await;
+        gpus.push(Gpu {
+            index,
+            max_temp,
+            fans,
+        });
     }
     gpus
+}
+
+/// Best-effort list of the `nvidia-settings` fan handles bound to a GPU, so a
+/// multi-fan card has every fan driven. Falls back to `[index]`.
+async fn detect_fans(index: u32) -> Vec<u32> {
+    let out = Command::new("nvidia-settings")
+        .args(["-q", &format!("[gpu:{index}]/Fans"), "-t"])
+        .output()
+        .await
+        .ok();
+    let fans = out
+        .filter(|o| o.status.success())
+        .map(|o| parse_fan_handles(&String::from_utf8_lossy(&o.stdout)))
+        .unwrap_or_default();
+    if fans.is_empty() {
+        vec![index]
+    } else {
+        fans
+    }
+}
+
+/// Parse fan handles out of an `nvidia-settings` fan listing. Prefers `fan:N`
+/// tokens; falls back to bare integers.
+fn parse_fan_handles(s: &str) -> Vec<u32> {
+    let mut out = Vec::new();
+    for part in s.split("fan:").skip(1) {
+        let num: String = part.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(n) = num.parse::<u32>() {
+            if !out.contains(&n) {
+                out.push(n);
+            }
+        }
+    }
+    if out.is_empty() {
+        for tok in s.split(|c: char| !c.is_ascii_digit()) {
+            if let Ok(n) = tok.parse::<u32>() {
+                if !out.contains(&n) {
+                    out.push(n);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Parse the slowdown (or shutdown) temperature from `nvidia-smi -q -d TEMPERATURE`.
@@ -118,44 +171,230 @@ fn parse_sample_line(line: &str) -> Option<AgentMetric> {
     })
 }
 
-/// Fan curve target for a GPU: hold the temperature inside 85–95% of its max
-/// rated temperature. Below the band → base speed; above → full; linear between.
-/// Returns `None` when the max temp is unknown (don't touch fans blindly).
-pub fn fan_target(max_temp: i32, temp: i32) -> Option<i32> {
-    if max_temp <= 0 {
-        return None;
-    }
-    let low = (max_temp as f32 * 0.85) as i32;
-    let high = (max_temp as f32 * 0.95) as i32;
-    let pct = if temp <= low {
-        30
-    } else if temp >= high {
-        100
-    } else {
-        30 + ((temp - low) as f32 / (high - low).max(1) as f32 * 70.0) as i32
-    };
-    Some(pct.clamp(0, 100))
+// ---- Closed-loop fan controller --------------------------------------------
+//
+// A target-temperature controller (adapted from the HiveOS autofan approach):
+// hold the core at `target_temp` with a dead band, trend damping, an asymmetric
+// slew limit (ramp up fast, coast down slowly), and an overheat fail-safe. It
+// replaces the earlier stateless 85–95%-of-rated band.
+
+pub const FAN_DEADBAND_DEFAULT: i32 = 2;
+pub const FAN_DOWN_STEP_DEFAULT: i32 = 5;
+const RECOVER_MARGIN: i32 = 10; // clear overheat once temp <= critical - this
+const FAST_RISE: i32 = 3; // °C/tick that earns an extra fan boost
+const MIN_DIFF: i32 = 10; // critical is forced to be at least target + this
+
+/// Operator-supplied fan-control configuration (one set per agent).
+#[derive(Clone, Copy, Debug)]
+pub struct FanConfig {
+    pub target_temp: i32,
+    pub min_fan: i32,
+    pub max_fan: i32,
+    /// Overheat trip; `None` derives it per-GPU from the rated slowdown temp.
+    pub critical_override: Option<i32>,
+    pub deadband: i32,
+    pub down_step: i32,
+    /// Memory-junction target; `None` disables VRAM-aware control. Inert until a
+    /// memory-temperature sensor is wired in (unsupported on most GeForce cards).
+    pub mem_target: Option<i32>,
 }
 
-/// While under load, disable auto fan control and drive each GPU's fan toward the
-/// 85–95% temperature band. Best-effort via `nvidia-settings`.
-pub async fn apply_fan_curve(gpus: &[Gpu], samples: &[AgentMetric]) {
-    for g in gpus {
-        let suffix = format!("[{}]", g.index);
-        let temp = match samples.iter().find(|s| s.name.ends_with(&suffix)) {
-            Some(s) => s.temp,
-            None => continue,
-        };
-        if let Some(pct) = fan_target(g.max_temp, temp) {
-            nvidia_settings(&[
-                "-a".into(),
-                format!("[gpu:{}]/GPUFanControlState=1", g.index),
-                "-a".into(),
-                format!("[fan:{}]/GPUTargetFanSpeed={pct}", g.index),
-            ])
-            .await;
+/// Resolved per-GPU policy (critical temperature filled in).
+#[derive(Clone, Copy, Debug)]
+pub struct FanPolicy {
+    pub target_temp: i32,
+    pub min_fan: i32,
+    pub max_fan: i32,
+    pub critical_temp: i32,
+    pub deadband: i32,
+    pub down_step: i32,
+    pub mem_target: Option<i32>,
+}
+
+/// Per-GPU state carried across controller ticks.
+#[derive(Clone, Copy, Debug)]
+pub struct FanState {
+    pub last_temp: Option<i32>,
+    pub last_fan: i32,
+    pub overheated: bool,
+}
+
+impl FanState {
+    pub fn new(initial_fan: i32) -> Self {
+        Self {
+            last_temp: None,
+            last_fan: initial_fan,
+            overheated: false,
         }
     }
+}
+
+/// The controller's decision for one GPU this tick.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FanAction {
+    /// Command this fan %.
+    Set(i32),
+    /// Within the dead band / sub-1% change — issue no `nvidia-settings` call.
+    Hold,
+    /// At/above critical: command this % (max) AND the caller must stop the task.
+    Critical(i32),
+}
+
+/// Derive a GPU's critical temperature from its rated slowdown temp and target,
+/// unless the operator pinned one. Kept in `[target + MIN_DIFF, max_temp]`.
+pub fn critical_for(max_temp: i32, target: i32, override_c: Option<i32>) -> i32 {
+    if let Some(c) = override_c {
+        return c;
+    }
+    let ceiling = if max_temp > 0 { max_temp } else { target + 20 };
+    (ceiling - 3).clamp(target + MIN_DIFF, ceiling.max(target + MIN_DIFF))
+}
+
+fn policy_for(cfg: &FanConfig, max_temp: i32) -> FanPolicy {
+    FanPolicy {
+        target_temp: cfg.target_temp,
+        min_fan: cfg.min_fan,
+        max_fan: cfg.max_fan,
+        critical_temp: critical_for(max_temp, cfg.target_temp, cfg.critical_override),
+        deadband: cfg.deadband,
+        down_step: cfg.down_step,
+        mem_target: cfg.mem_target,
+    }
+}
+
+/// Pure decision: given the policy, prior state and this tick's reading, return
+/// the fan command and the next state. `mem_temp` is the memory-junction temp
+/// when available, else `None`. No I/O.
+pub fn decide_fan(
+    policy: &FanPolicy,
+    state: FanState,
+    core_temp: i32,
+    mem_temp: Option<i32>,
+) -> (FanAction, FanState) {
+    let mut next = state;
+
+    // Reject obviously-bad driver readings; leave state untouched.
+    if core_temp <= 0 || core_temp > 120 {
+        return (FanAction::Hold, state);
+    }
+
+    // Governing margin: whichever of core/memory is further over its own target.
+    let core_over = core_temp - policy.target_temp;
+    let (over, mem_governs) = match (policy.mem_target, mem_temp) {
+        (Some(mt), Some(m)) if m - mt > core_over => (m - mt, true),
+        _ => (core_over, false),
+    };
+    let deadband = if mem_governs {
+        policy.deadband + 1
+    } else {
+        policy.deadband
+    };
+
+    // Overheat is a *core*-temperature safety (memory can legitimately run much
+    // hotter, e.g. GDDR6X ~100°C+). Memory only drives the proportional fan via
+    // `over`/`mem_governs` above; it never stops the task. Latch at/above
+    // critical, release only after cooling by the recovery margin.
+    let hot = core_temp >= policy.critical_temp;
+    if hot || (state.overheated && core_temp > policy.critical_temp - RECOVER_MARGIN) {
+        next.overheated = true;
+        next.last_temp = Some(core_temp);
+        next.last_fan = policy.max_fan;
+        return (FanAction::Critical(policy.max_fan), next);
+    }
+    next.overheated = false;
+
+    let first = state.last_temp.is_none();
+
+    // Within the dead band (and not the first observation): hold.
+    if !first && over.abs() <= deadband {
+        next.last_temp = Some(core_temp);
+        return (FanAction::Hold, next);
+    }
+
+    // Proportional setpoint: target → min_fan, critical → max_fan.
+    let span = (policy.critical_temp - policy.target_temp).max(1);
+    let gain = (policy.max_fan - policy.min_fan) as f32 / span as f32;
+    let mut prop = policy.min_fan + (over as f32 * gain).round() as i32;
+
+    // Trend damping: don't slow while heating (boost on a fast rise); don't
+    // speed up while cooling.
+    if let Some(prev) = state.last_temp {
+        let rise = core_temp - prev;
+        if rise > 0 && over > 0 {
+            prop = prop.max(state.last_fan);
+            if rise >= FAST_RISE {
+                prop = (prop + 5).min(policy.max_fan);
+            }
+        } else if rise < 0 && over < 0 {
+            prop = prop.min(state.last_fan);
+        }
+    }
+    prop = prop.clamp(policy.min_fan, policy.max_fan);
+
+    // Asymmetric slew: up is immediate, down is capped per tick.
+    let new_fan = if prop < state.last_fan {
+        prop.max(state.last_fan - policy.down_step)
+    } else {
+        prop
+    }
+    .clamp(policy.min_fan, policy.max_fan);
+
+    next.last_temp = Some(core_temp);
+    // Suppress redundant commands, but always emit on the first tick so manual
+    // control actually gets established.
+    if !first && (new_fan - state.last_fan).abs() <= 1 {
+        return (FanAction::Hold, next);
+    }
+    next.last_fan = new_fan;
+    (FanAction::Set(new_fan), next)
+}
+
+/// Drive every detected GPU's fans one controller tick. Updates `states` in
+/// place and returns an overheat description if any GPU tripped critical (the
+/// caller should then stop the task). Best-effort via `nvidia-settings`.
+pub async fn drive_fans(
+    gpus: &[Gpu],
+    samples: &[AgentMetric],
+    cfg: &FanConfig,
+    states: &mut HashMap<u32, FanState>,
+) -> Option<String> {
+    let mut overheat = None;
+    for g in gpus {
+        let suffix = format!("[{}]", g.index);
+        let s = match samples.iter().find(|s| s.name.ends_with(&suffix)) {
+            Some(s) => s,
+            None => continue,
+        };
+        let policy = policy_for(cfg, g.max_temp);
+        let st = states
+            .entry(g.index)
+            .or_insert_with(|| FanState::new(if s.fan > 0 { s.fan } else { cfg.min_fan }));
+        let (action, next) = decide_fan(&policy, *st, s.temp, None);
+        *st = next;
+        let pct = match action {
+            FanAction::Hold => continue,
+            FanAction::Set(p) => p,
+            FanAction::Critical(p) => {
+                overheat.get_or_insert_with(|| {
+                    format!(
+                        "GPU {} at {}°C >= critical {}°C",
+                        g.index, s.temp, policy.critical_temp
+                    )
+                });
+                p
+            }
+        };
+        let mut args = vec![
+            "-a".to_string(),
+            format!("[gpu:{}]/GPUFanControlState=1", g.index),
+        ];
+        for fan in &g.fans {
+            args.push("-a".to_string());
+            args.push(format!("[fan:{fan}]/GPUTargetFanSpeed={pct}"));
+        }
+        nvidia_settings(&args).await;
+    }
+    overheat
 }
 
 /// Hand the fans back to the driver's automatic control (task finished).
@@ -171,7 +410,32 @@ pub async fn reset_fans(gpus: &[Gpu]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{fan_target, parse_sample_line};
+    use super::{
+        critical_for, decide_fan, parse_fan_handles, parse_sample_line, FanAction, FanPolicy,
+        FanState,
+    };
+
+    fn policy() -> FanPolicy {
+        // target 75, critical 87 -> span 12; fan 30..100.
+        FanPolicy {
+            target_temp: 75,
+            min_fan: 30,
+            max_fan: 100,
+            critical_temp: 87,
+            deadband: 2,
+            down_step: 5,
+            mem_target: None,
+        }
+    }
+
+    // Reach steady state at a temperature, so later ticks are not "first tick".
+    fn primed(temp: i32, fan: i32) -> FanState {
+        FanState {
+            last_temp: Some(temp),
+            last_fan: fan,
+            overheated: false,
+        }
+    }
 
     #[test]
     fn parses_a_real_nvidia_smi_row() {
@@ -207,13 +471,118 @@ mod tests {
     }
 
     #[test]
-    fn fan_curve_holds_the_band() {
-        // max 90°C -> band 76.5..85.5 (low 76, high 85).
-        assert_eq!(fan_target(90, 50), Some(30)); // cool -> base
-        assert_eq!(fan_target(90, 76), Some(30)); // at/below low -> base
-        assert_eq!(fan_target(90, 90), Some(100)); // above high -> full
-        let mid = fan_target(90, 80).unwrap(); // inside band -> ramped
-        assert!(mid > 30 && mid < 100, "mid-band ramp was {mid}");
-        assert_eq!(fan_target(0, 80), None); // unknown max -> don't touch
+    fn holds_within_deadband() {
+        // At target, primed: no change.
+        let (a, _) = decide_fan(&policy(), primed(75, 40), 75, None);
+        assert_eq!(a, FanAction::Hold);
+    }
+
+    #[test]
+    fn first_tick_always_sets_to_establish_control() {
+        // last_temp None -> must emit a Set even if within the dead band.
+        let (a, st) = decide_fan(&policy(), FanState::new(30), 75, None);
+        assert!(matches!(a, FanAction::Set(_)));
+        assert_eq!(st.last_temp, Some(75));
+    }
+
+    #[test]
+    fn ramps_up_above_target() {
+        // Halfway to critical (81°C) should land mid-range, above min.
+        let (a, _) = decide_fan(&policy(), primed(75, 30), 81, None);
+        match a {
+            FanAction::Set(p) => assert!(p > 40 && p < 100, "mid ramp was {p}"),
+            other => panic!("expected Set, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn saturates_near_critical() {
+        // One below critical (87): proportional + fast-rise boost pins it high.
+        let (a, _) = decide_fan(&policy(), primed(80, 70), 86, None);
+        match a {
+            FanAction::Set(p) => assert!(p >= 95, "near-critical fan was {p}"),
+            other => panic!("expected Set, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn down_step_limits_decrease() {
+        // Over the dead band so it recomputes, but a big drop may only fall by
+        // down_step (5) this tick: 90 -> 85, not straight to the proportional ~48.
+        let (a, _) = decide_fan(&policy(), primed(85, 90), 78, None);
+        assert_eq!(a, FanAction::Set(85));
+    }
+
+    #[test]
+    fn up_is_immediate() {
+        // Jump from cool to hot: fan goes straight up, not step-limited.
+        let (a, _) = decide_fan(&policy(), primed(74, 30), 84, None);
+        match a {
+            FanAction::Set(p) => assert!(p >= 80, "expected a big jump, got {p}"),
+            other => panic!("expected Set, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rising_temp_prevents_slowdown() {
+        // Over target but proportional would suggest ~min; rising trend clamps to last_fan.
+        let (a, _) = decide_fan(&policy(), primed(76, 60), 78, None);
+        match a {
+            FanAction::Set(p) => assert!(p >= 60, "rising clamp failed: {p}"),
+            FanAction::Hold => {} // holding at >=60 is also acceptable
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn critical_latches_and_recovers() {
+        let p = policy();
+        let (a, st) = decide_fan(&p, primed(85, 90), 88, None);
+        assert_eq!(a, FanAction::Critical(100));
+        assert!(st.overheated);
+        // Still latched at 80 (critical 87 - recover 10 = 77; 80 > 77).
+        let (a2, st2) = decide_fan(&p, st, 80, None);
+        assert_eq!(a2, FanAction::Critical(100));
+        assert!(st2.overheated);
+        // Cooled to 76 (<= 77): releases.
+        let (a3, st3) = decide_fan(&p, st2, 76, None);
+        assert!(!st3.overheated);
+        assert!(matches!(a3, FanAction::Set(_) | FanAction::Hold));
+    }
+
+    #[test]
+    fn invalid_reading_holds_without_state_change() {
+        let before = primed(70, 45);
+        let (a, after) = decide_fan(&policy(), before, 130, None);
+        assert_eq!(a, FanAction::Hold);
+        assert_eq!(after.last_fan, before.last_fan);
+        assert_eq!(after.last_temp, before.last_temp);
+    }
+
+    #[test]
+    fn memory_governs_when_hotter() {
+        let mut p = policy();
+        p.mem_target = Some(95);
+        // Core cool (60, under target) but memory at 104 -> should ramp up hard.
+        let (a, _) = decide_fan(&p, primed(60, 30), 60, Some(104));
+        match a {
+            FanAction::Set(pct) => assert!(pct > 50, "mem governance weak: {pct}"),
+            other => panic!("expected Set, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn critical_derivation() {
+        assert_eq!(critical_for(90, 75, None), 87); // 90 - 3
+        assert_eq!(critical_for(90, 75, Some(80)), 80); // override wins
+        assert_eq!(critical_for(0, 75, None), 92); // unknown max -> (target + 20) - 3
+    }
+
+    #[test]
+    fn parses_fan_handles() {
+        assert_eq!(parse_fan_handles("[fan:0], [fan:1]"), vec![0, 1]);
+        assert_eq!(parse_fan_handles("fan:2"), vec![2]);
+        assert_eq!(parse_fan_handles("0, 1"), vec![0, 1]); // bare-integer fallback
+        assert!(parse_fan_handles("none here").is_empty());
     }
 }

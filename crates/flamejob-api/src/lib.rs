@@ -243,7 +243,7 @@ impl Event {
     // so the document served at /openapi.json always matches the release.
     info(
         title = "flamejob",
-        version = "1.2.0",
+        version = "1.3.0",
         description = "Distributed hashcat queue API"
     ),
     components(schemas(
