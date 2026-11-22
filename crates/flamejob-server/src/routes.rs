@@ -42,6 +42,7 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/api-keys/:id", delete(revoke_api_key))
         .route("/jobs", get(list_jobs).post(create_job))
         .route("/jobs/clear", post(clear_finished_jobs))
+        .route("/jobs/history", get(list_job_history))
         .route("/jobs/:id", get(get_job).patch(patch_job))
         .route("/jobs/:id/tasks", get(list_job_tasks))
         .route("/jobs/:id/pause", post(pause_job))
@@ -375,8 +376,10 @@ async fn create_job(
 }
 
 /// POST /jobs/clear — remove all finished jobs (and, by cascade, their tasks)
-/// from the queue. Cracked hashes and hashlists are untouched. Requires
-/// `SubmitJobs` (superadmin and operator).
+/// from the queue. Cracked hashes and hashlists are untouched. Before deleting,
+/// each finished job is recorded in `job_history` so it stays visible in the
+/// dashboard's "Completed" tab and its cracked plaintext remains reachable via
+/// the preserved `hashlist_id`. Requires `SubmitJobs` (superadmin and operator).
 #[utoipa::path(
     post, path = "/jobs/clear", tag = "jobs", security(("bearer" = [])),
     responses(
@@ -389,15 +392,94 @@ async fn clear_finished_jobs(
     auth: AuthUser,
 ) -> Result<Json<ClearedJobs>, AppError> {
     auth.require(Capability::SubmitJobs)?;
+    // Archive finished jobs into the durable history BEFORE deleting them, so the
+    // "Completed" tab can still find them and re-open their cracked hashes. Done
+    // in a transaction with the delete so a job is never lost without a matching
+    // history row. Re-clearing a previously archived id refreshes its snapshot.
+    let mut tx = state.db.begin().await?;
+    sqlx::query(
+        "INSERT INTO job_history \
+           (id, name, hashlist_id, owner_user_id, attack_mode, state, created_at, finished_at) \
+         SELECT id, name, hashlist_id, owner_user_id, attack_mode, state, created_at, finished_at \
+         FROM jobs WHERE state IN ('completed','exhausted','cancelled','error') \
+         ON CONFLICT (id) DO UPDATE SET \
+           state = EXCLUDED.state, finished_at = EXCLUDED.finished_at, archived_at = now()",
+    )
+    .execute(&mut *tx)
+    .await?;
     let cleared = sqlx::query(
         "DELETE FROM jobs WHERE state IN ('completed','exhausted','cancelled','error')",
     )
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?
     .rows_affected() as i64;
-    tracing::info!(user = %auth.username, cleared, "cleared finished jobs");
+    tx.commit().await?;
+    tracing::info!(user = %auth.username, cleared, "cleared finished jobs (archived to history)");
     Ok(Json(ClearedJobs { cleared }))
 }
+
+/// GET /jobs/history — finished jobs for the dashboard's "Completed" tab.
+///
+/// Returns the union of (a) jobs still in the live queue in a terminal state and
+/// (b) jobs that were cleared and now live only in `job_history`. Cracked/total
+/// counts are read live from the hashlist in both cases, so a completed job's
+/// cracked evidence stays accurate and reachable (via `hashlist_id`) even after
+/// the live job row is gone. Requires `ViewJobs`; seeing the plaintext itself
+/// still requires `ViewPlaintext` on `/hashlists/{id}/cracked`.
+#[utoipa::path(
+    get, path = "/jobs/history", tag = "jobs", security(("bearer" = [])),
+    responses(
+        (status = 200, body = Vec<JobHistoryView>, description = "Finished jobs, newest first"),
+        (status = 403, description = "Missing ViewJobs")
+    )
+)]
+async fn list_job_history(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> Result<Json<Vec<flamejob_api::JobHistoryView>>, AppError> {
+    auth.require(Capability::ViewJobs)?;
+    let rows: Vec<JobHistAgg> = sqlx::query_as(
+        "SELECT j.id, j.name, j.hashlist_id, j.state::text, h.cracked, h.total, \
+                j.created_at, j.finished_at, false AS archived \
+           FROM jobs j JOIN hashlists h ON h.id = j.hashlist_id \
+          WHERE j.state IN ('completed','exhausted','cancelled','error') \
+         UNION ALL \
+         SELECT a.id, a.name, a.hashlist_id, a.state::text, h.cracked, h.total, \
+                a.created_at, a.finished_at, true AS archived \
+           FROM job_history a JOIN hashlists h ON h.id = a.hashlist_id \
+          WHERE a.id NOT IN (SELECT id FROM jobs) \
+          ORDER BY finished_at DESC NULLS LAST, created_at DESC",
+    )
+    .fetch_all(&state.db)
+    .await?;
+    let out = rows
+        .into_iter()
+        .map(|r| flamejob_api::JobHistoryView {
+            id: r.0,
+            name: r.1,
+            hashlist_id: r.2,
+            state: parse_job_state(&r.3),
+            cracked: r.4,
+            total: r.5,
+            created_at: r.6,
+            finished_at: r.7,
+            archived: r.8,
+        })
+        .collect();
+    Ok(Json(out))
+}
+
+type JobHistAgg = (
+    Uuid,
+    String,
+    Uuid,
+    String,
+    i32,
+    i32,
+    chrono::DateTime<chrono::Utc>,
+    Option<chrono::DateTime<chrono::Utc>>,
+    bool,
+);
 
 #[utoipa::path(
     get, path = "/jobs/{id}", tag = "jobs", security(("bearer" = [])),

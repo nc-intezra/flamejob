@@ -4,6 +4,35 @@ All notable changes to flamejob are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-11-22
+
+Dashboard: completed-jobs history, device grouping, and header cleanup.
+
+### Added
+- **"Completed" tab in the Jobs panel.** The Jobs panel now toggles between
+  **Active** (the live queue, as before) and **Completed** (every finished job).
+  Selecting a completed job opens its cracked hashes in the detail panel, so the
+  recovered plaintext stays reachable.
+- **Finished jobs are archived before they are cleared.** A new durable
+  `job_history` table (migration `0006`) records each finished job when
+  "Clear finished" runs. The cracked plaintext already survived a clear (it lives
+  in `hashes`, cascaded from `hashlists`, not from `jobs`), but the only UI path
+  to it died with the live job row — now the Completed tab keeps that path alive
+  via the preserved `hashlist_id`. New `GET /jobs/history` (requires `ViewJobs`;
+  the plaintext itself still requires `ViewPlaintext`).
+- **Group devices by host.** Clicking the **Devices** panel heading toggles
+  between the flat list (all devices) and a tabbed view with one tab per host
+  (derived from the `agent-name/device` telemetry naming; local devices group
+  under "this server"). Useful for hosts with several GPUs/CPUs. The choice is
+  remembered per browser.
+
+### Changed
+- **The "API docs" link moved under the username menu** (top-right). Clicking the
+  username now opens a small menu with "API docs ↗" and "API keys…" rather than
+  jumping straight to the keys dialog, decluttering the header bar.
+- **The flames behind the "flamejob" wordmark were removed.** They reduced the
+  legibility of the text; the wordmark now stands on its own.
+
 ## [1.4.0] - 2026-11-22
 
 Windows GPU worker agent.

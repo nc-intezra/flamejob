@@ -17,8 +17,6 @@
        (Jobs / Job detail) down to the mid regions (Submit / Devices), so the
        Submit form fits without its own scrollbar in a windowed 1080p viewport. */
     --region-shift:40px;
-    /* flame gradient behind the wordmark — dark theme: orange-red */
-    --flame1:#ff3b00; --flame2:#ffc400; --flame-opacity:.85;
     --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
     --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
   }
@@ -26,16 +24,12 @@
     --bg:#f4f6f9; --panel:#ffffff; --panel2:#eef1f5; --ink:#1f2530; --dim:#67707f;
     --accent:#2f74c0; --good:#3f8f4f; --warn:#b07611; --bad:#c0392b; --busy:#c47d18;
     --sel:#e6eef9; --track:#dde2ea; --border:#e0e4ea;
-    /* light theme flame: blue-to-purple */
-    --flame1:#2b5cff; --flame2:#8a2be2; --flame-opacity:.6;
   }
   /* OLED: 100% black background with orange-fade text */
   html[data-theme="oled"]{
     --bg:#000000; --panel:#070707; --panel2:#0c0c0c; --ink:#ffa652; --dim:#9a5a2a;
     --accent:#ff7a18; --good:#ffb703; --warn:#ffb300; --bad:#ff1f1f; --busy:#ff8c00;
     --sel:#190d03; --track:#241206; --border:#1c1105;
-    /* OLED flame: brightly coloured orange-red */
-    --flame1:#ff2a00; --flame2:#ff9d00; --flame-opacity:1;
   }
   /* OLED: make hot cards pop against the black background. */
   html[data-theme="oled"] .num.bad{font-weight:700;text-shadow:0 0 9px rgba(255,31,31,.85)}
@@ -53,11 +47,7 @@
   header.bar{display:flex;align-items:center;justify-content:space-between;
     background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:8px 14px}
   .brandwrap{position:relative;display:inline-block;vertical-align:middle}
-  /* Flame centred on the wordmark; the SVG gradient fades its tips to transparent
-     so it glows behind the letters instead of blending with their colour. */
-  .brandwrap .flame{position:absolute;left:50%;top:42%;transform:translate(-50%,-50%);
-    height:42px;width:118%;opacity:var(--flame-opacity);z-index:0;pointer-events:none}
-  .brand{position:relative;z-index:1;font-family:var(--mono);font-weight:700;color:var(--accent);font-size:16px}
+  .brand{position:relative;z-index:1;font-family:var(--mono);font-weight:700;color:var(--accent);font-size:22pt}
   .sub{color:var(--dim);margin-left:16px}
   .pill{margin-left:14px;font-size:12px}
   .pill.good{color:var(--good)} .pill.dim{color:var(--dim)}
@@ -67,6 +57,16 @@
     border-radius:8px;padding:5px 8px;cursor:pointer;font-size:13px}
   .user:hover{border-color:var(--accent);color:var(--accent)}
   .user .role{color:var(--dim);font-size:11px;margin-left:6px;text-transform:uppercase;letter-spacing:.04em}
+  .user .caret{color:var(--dim);font-size:10px;margin-left:6px}
+  /* ---- username dropdown (API docs / API keys) ---- */
+  .usermenu-wrap{position:relative}
+  .usermenu{position:absolute;right:0;top:calc(100% + 6px);z-index:50;min-width:160px;
+    background:var(--panel);border:1px solid var(--border);border-radius:8px;
+    box-shadow:0 8px 28px rgba(0,0,0,.45);padding:4px;display:flex;flex-direction:column}
+  .usermenu .um-item{display:block;width:100%;text-align:left;background:none;border:none;
+    color:var(--ink);font-family:var(--sans);font-size:13px;padding:7px 10px;border-radius:6px;cursor:pointer}
+  .usermenu a.um-item{text-decoration:none}
+  .usermenu .um-item:hover{background:var(--sel);color:var(--accent);text-decoration:none}
   /* ---- account / API-keys modal ---- */
   .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;
     align-items:flex-start;justify-content:center;padding-top:7vh;z-index:50}
@@ -113,6 +113,14 @@
   .panel > .head{display:flex;align-items:center;justify-content:space-between;
     padding:8px 12px;border-bottom:1px solid var(--border);font-weight:600}
   .panel > .head .t{letter-spacing:.02em}
+  /* A panel heading that toggles a view when clicked (e.g. Devices grouping). */
+  .panel > .head .t.clickable{cursor:pointer;user-select:none}
+  .panel > .head .t.clickable:hover{color:var(--accent)}
+  .panel > .head .t.clickable.on{color:var(--accent)}
+  .panel > .head .t.clickable::after{content:" ⊟";color:var(--dim);font-size:11px}
+  .panel > .head .t.clickable.on::after{content:" ▦";color:var(--accent)}
+  .devtabs{padding:4px 6px;flex-wrap:wrap}
+  .devtabs button .dim{margin-left:4px}
   .panel > .body{padding:6px 4px;overflow:auto;min-height:0}
   #agentsPanel,#adminPanel{flex:0 0 auto;max-height:30vh}
 
@@ -122,8 +130,9 @@
   td{padding:6px 10px;border-top:1px solid var(--border);vertical-align:middle}
   tbody tr{cursor:default}
   tbody tr.rowsel{background:var(--sel)}
-  #jobsTable tbody tr{cursor:pointer}
-  #jobsTable tbody tr:hover{background:var(--sel)}
+  #jobsTable tbody tr,#jobsHistTable tbody tr{cursor:pointer}
+  #jobsTable tbody tr:hover,#jobsHistTable tbody tr:hover{background:var(--sel)}
+  .headgroup{display:inline-flex;align-items:center;gap:10px;min-width:0}
 
   /* Agent column: shown only for roles that act on jobs (superadmin/admin/
      operator), toggled by the .show-agent class on the table. */
@@ -276,20 +285,6 @@
   <header class="bar">
     <div>
       <span class="brandwrap">
-        <svg class="flame" viewBox="0 0 124 34" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-          <defs>
-            <linearGradient id="flameGrad" x1="0" y1="1" x2="0" y2="0">
-              <stop offset="0" stop-color="var(--flame1)"/>
-              <stop offset="0.5" stop-color="var(--flame2)" stop-opacity="0.9"/>
-              <stop offset="1" stop-color="var(--flame2)" stop-opacity="0"/>
-            </linearGradient>
-          </defs>
-          <g fill="url(#flameGrad)">
-            <path d="M62 2c7 9 3 13 7 18 3-3 3-7 2-10 6 6 11 14 11 21 0 11-9 19-20 19S42 42 42 31c0-8 6-14 11-20 0 5 1 9 4 11 2-7-3-13 5-20z"/>
-            <path d="M30 12c4 4 3 8 5 11 2-2 2-5 1-7 4 5 7 10 7 15 0 7-6 12-13 12s-13-5-13-12c0-5 4-9 7-13 0 3 1 6 3 7 1-5-2-9 3-13z" opacity=".75"/>
-            <path d="M94 12c4 4 3 8 5 11 2-2 2-5 1-7 4 5 7 10 7 15 0 7-6 12-13 12s-13-5-13-12c0-5 4-9 7-13 0 3 1 6 3 7 1-5-2-9 3-13z" opacity=".75"/>
-          </g>
-        </svg>
         <span class="brand">flamejob</span>
       </span>
       <span class="sub">queue dashboard</span>
@@ -297,10 +292,15 @@
       <span class="pill dim" id="cQueued">0 queued</span>
     </div>
     <div class="right">
-      <a id="docsLink" class="iconbtn" target="_blank" rel="noopener">API docs ↗</a>
       <span class="clock" id="clock"></span>
       <button class="iconbtn" id="themeBtn">◐ theme</button>
-      <button class="user" id="userBtn" title="Account & API keys"><span id="uName" class="mono"></span><span class="role" id="uRoles"></span></button>
+      <div class="usermenu-wrap">
+        <button class="user" id="userBtn" title="Account" aria-haspopup="true" aria-expanded="false"><span id="uName" class="mono"></span><span class="role" id="uRoles"></span><span class="caret">▾</span></button>
+        <div class="usermenu" id="userMenu" style="display:none" role="menu">
+          <a id="docsLink" class="um-item" target="_blank" rel="noopener" role="menuitem">API docs ↗</a>
+          <button class="um-item" id="menuKeys" role="menuitem">API keys…</button>
+        </div>
+      </div>
       <button class="iconbtn" id="logoutBtn">Log out</button>
     </div>
   </header>
@@ -328,11 +328,18 @@
   <main>
     <div class="region region-top">
     <section class="panel" id="jobsPanel">
-      <div class="head"><span class="t">Jobs</span><span class="ctl" id="jobsCtl"></span></div>
+      <div class="head">
+        <span class="headgroup"><span class="t">Jobs</span><span class="tabs" id="jobsTabs"></span></span>
+        <span class="ctl" id="jobsCtl"></span>
+      </div>
       <div class="body">
         <table id="jobsTable">
           <thead><tr><th>Job</th><th>State</th><th>Progress</th><th>Speed</th><th>ETA</th><th>Cracked</th><th class="agentcol">Agent</th></tr></thead>
           <tbody id="jobsBody"></tbody>
+        </table>
+        <table id="jobsHistTable" style="display:none">
+          <thead><tr><th>Job</th><th>State</th><th>Cracked</th><th>Finished</th></tr></thead>
+          <tbody id="jobsHistBody"></tbody>
         </table>
       </div>
     </section>
@@ -363,8 +370,9 @@
       </section>
 
       <section class="panel" id="devicesPanel">
-        <div class="head"><span class="t">Devices</span><span class="dim" id="devNote"></span></div>
+        <div class="head"><span class="t clickable" id="devicesTitle" title="click to group devices by host">Devices</span><span class="dim" id="devNote"></span></div>
         <div class="body">
+          <div class="tabs devtabs" id="devTabs" style="display:none"></div>
           <table id="devTable">
             <thead><tr><th>Device</th><th>Temp</th><th>Fan</th><th>Util</th><th>P-State</th><th>Clock</th><th>Hashrate</th></tr></thead>
             <tbody id="devBody"></tbody>
@@ -412,7 +420,12 @@ const ROLE_CAPS = {
 };
 const ALL_ROLES = ["superadmin","admin","operator","viewer"];
 
-const S = { token:null, roles:[], caps:new Set(), user:"", selected:null, timer:null, detailView:"chunks", selJob:null };
+const S = { token:null, roles:[], caps:new Set(), user:"", selected:null, timer:null, detailView:"chunks", selJob:null,
+  // Devices panel: group by host (tabs) vs flat list; remembered per browser.
+  devGroup: localStorage.getItem("fj_dev_group")==="1", devHost:null,
+  // Jobs panel: "active" live queue vs "completed" history; whether the current
+  // selection is a cleared/archived job (detail shows cracked hashes only).
+  jobsView:"active", selIsHist:false };
 
 // ---- theme ----
 const THEMES = ["dark","light","oled"];
@@ -539,10 +552,18 @@ function gatePanels(){
   const mid = document.getElementById("regionMid");
   mid.style.display = midPanels ? "grid" : "none";
   mid.classList.toggle("one", midPanels === 1);
+  // Jobs panel: Active (live queue) / Completed (history) tabs.
+  const jt=document.getElementById("jobsTabs");
+  if(showJobs){
+    jt.innerHTML =
+      `<button data-v="active" class="${S.jobsView==="active"?"on":""}">Active</button>`+
+      `<button data-v="completed" class="${S.jobsView==="completed"?"on":""}">Completed</button>`;
+    [...jt.querySelectorAll("button")].forEach(b=>b.onclick=()=>setJobsView(b.getAttribute("data-v")));
+  } else jt.innerHTML="";
   // Jobs-panel controls: "Clear finished" purges terminal jobs (SubmitJobs).
   const jc=document.getElementById("jobsCtl");
   if(showJobs && can("submit_jobs")){
-    jc.innerHTML = `<button class="danger" id="clearBtn" title="Delete completed/exhausted/cancelled/error jobs">Clear finished</button>`;
+    jc.innerHTML = `<button class="danger" id="clearBtn" title="Clear completed/exhausted/cancelled/error jobs from the queue (kept under Completed)">Clear finished</button>`;
     document.getElementById("clearBtn").onclick = clearFinished;
   } else jc.innerHTML = "";
   const hints=[];
@@ -556,25 +577,59 @@ setInterval(()=>{ document.getElementById("clock").textContent = new Date().toIS
 
 // ---- main refresh ----
 async function tick(){
-  const jobs = [];
   try{
-    if(can("view_jobs")) renderJobs(await api("/jobs"));
+    if(can("view_jobs")){
+      const jobs = await api("/jobs");
+      JOBS = jobs;
+      if(S.jobsView==="completed"){ setJobPills(jobs); renderJobHistory(await api("/jobs/history")); }
+      else renderJobs(jobs); // sets the pills itself
+    }
     if(can("view_stats")) renderDevices(await api("/devices"));
     if(can("view_stats")) renderAgents(await api("/agents"));
-    if(can("view_jobs") && S.selected){
-      if(S.detailView==="cracked" && S.selJob) loadCracked(S.selJob.hashlist_id);
+    if(can("view_jobs") && S.selected && S.selJob){
+      // Archived (history) selections only have cracked plaintext — no live tasks.
+      if(S.selIsHist || S.detailView==="cracked") loadCracked(S.selJob.hashlist_id);
       else renderChunks(await api("/jobs/"+S.selected+"/tasks"));
     }
     document.getElementById("lastUpd").textContent = "updated " + new Date().toLocaleTimeString();
   }catch(err){ if(String(err.message)!=="unauthorized") flash("refresh error: "+err.message, true); }
+}
+function setJobPills(jobs){
+  document.getElementById("cRunning").textContent = jobs.filter(j=>j.state==="running").length + " running";
+  document.getElementById("cQueued").textContent  = jobs.filter(j=>j.state==="queued").length + " queued";
+}
+// Switch the Jobs panel between the live queue and the completed-jobs history.
+function setJobsView(v){
+  if(S.jobsView===v) return;
+  S.jobsView=v;
+  // Drop any current selection so the detail panel doesn't show a live job's
+  // chunks under the Completed list (or vice versa).
+  S.selected=null; S.selJob=null; S.selIsHist=false; S.detailView="chunks";
+  resetDetail();
+  [...document.querySelectorAll("#jobsTabs button")].forEach(b=>b.classList.toggle("on", b.getAttribute("data-v")===v));
+  document.getElementById("jobsTable").style.display     = v==="active"    ? "table":"none";
+  document.getElementById("jobsHistTable").style.display = v==="completed" ? "table":"none";
+  tick();
+}
+// Return the detail panel to its empty "select a job" state.
+function resetDetail(){
+  document.getElementById("detailTitle").textContent="Job";
+  document.getElementById("detailSummary").innerHTML=`<span class="dim">select a job</span>`;
+  document.getElementById("detailTabs").innerHTML="";
+  document.getElementById("detailCtl").innerHTML="";
+  document.getElementById("chunksBody").innerHTML="";
+  document.getElementById("crackedBody").innerHTML="";
+  document.getElementById("detailAgg").textContent="";
+  document.getElementById("chunksTable").style.display="table";
+  document.getElementById("crackedTable").style.display="none";
+  document.getElementById("detailAgg").style.display="block";
 }
 document.addEventListener("keydown", e=>{ if((e.key==="r"||e.key==="R") && S.token && document.activeElement.tagName!=="INPUT") tick(); });
 
 let JOBS = [];
 function renderJobs(jobs){
   JOBS = jobs;
-  document.getElementById("cRunning").textContent = jobs.filter(j=>j.state==="running").length + " running";
-  document.getElementById("cQueued").textContent  = jobs.filter(j=>j.state==="queued").length + " queued";
+  setJobPills(jobs);
   const table=document.getElementById("jobsTable");
   table.classList.toggle("show-agent", canSeeAgent());
   const cols = canSeeAgent()?7:6;
@@ -600,10 +655,10 @@ function renderJobs(jobs){
     const j=JOBS.find(x=>x.id===el.getAttribute("data-id"));
     if(j) openPinMenu(j, el);
   });
-  if(S.selected){ const j=jobs.find(x=>x.id===S.selected); if(j) renderDetailSummary(j); }
+  if(S.selected && !S.selIsHist){ const j=jobs.find(x=>x.id===S.selected); if(j) renderDetailSummary(j); }
 }
 
-function selectJob(id){ S.selected=id; S.detailView="chunks"; renderJobs(JOBS);
+function selectJob(id){ S.selected=id; S.selIsHist=false; S.detailView="chunks"; renderJobs(JOBS);
   const j=JOBS.find(x=>x.id===id); if(j){ S.selJob=j; renderDetailSummary(j); }
   showDetailView();
   api("/jobs/"+id+"/tasks").then(renderChunks).catch(()=>{}); }
@@ -656,9 +711,49 @@ function renderCracked(items){
 async function jobAction(id, a){ try{ await api("/jobs/"+id+"/"+a,{method:"POST"}); flash("job "+a+" requested"); tick(); }
   catch(err){ flash(a+" failed: "+err.message, true); } }
 async function clearFinished(){
-  if(!confirm("Delete all finished jobs (completed, exhausted, cancelled, error) and their tasks? Cracked hashes are kept.")) return;
-  try{ const r=await api("/jobs/clear",{method:"POST"}); flash("cleared "+r.cleared+" finished job(s)"); if(S.selected){S.selected=null;} tick(); }
+  if(!confirm("Clear all finished jobs (completed, exhausted, cancelled, error) from the active queue?\n\nThey move to the Completed tab and their cracked hashes are kept.")) return;
+  try{ const r=await api("/jobs/clear",{method:"POST"}); flash("cleared "+r.cleared+" finished job(s) — see the Completed tab");
+    if(S.selected){ S.selected=null; S.selJob=null; S.selIsHist=false; resetDetail(); } tick(); }
   catch(err){ flash("clear failed: "+err.message, true); }
+}
+
+// ---- completed-jobs history (Jobs → Completed tab) ----
+let JOB_HIST = [];
+function renderJobHistory(items){
+  JOB_HIST = items;
+  const body=document.getElementById("jobsHistBody");
+  if(!items.length){ body.innerHTML=`<tr><td colspan="4" class="empty">no completed jobs yet</td></tr>`; return; }
+  body.innerHTML = items.map(j=>`
+    <tr data-id="${esc(j.id)}" class="${j.id===S.selected?"rowsel":""}">
+      <td><span class="jobname">${esc(j.name)}</span>${j.archived?` <span class="dim" title="cleared from the queue — kept for its cracked hashes">· archived</span>`:""}</td>
+      <td>${stateEl(j.state)}</td>
+      <td class="num">${j.cracked}/${j.total}</td>
+      <td class="dim num">${j.finished_at?new Date(j.finished_at).toLocaleString():"—"}</td>
+    </tr>`).join("");
+  [...body.querySelectorAll("tr[data-id]")].forEach(tr=>tr.onclick=()=>selectHistJob(tr.getAttribute("data-id")));
+}
+function selectHistJob(id){
+  const j=JOB_HIST.find(x=>x.id===id); if(!j) return;
+  S.selected=id; S.selIsHist=true; S.detailView="cracked";
+  S.selJob={ id:j.id, name:j.name, hashlist_id:j.hashlist_id, state:j.state, cracked:j.cracked, total:j.total };
+  renderJobHistory(JOB_HIST);   // refresh the selected-row highlight
+  renderHistDetail(j);
+}
+// A completed job's detail: cracked plaintext only (its live tasks are gone).
+function renderHistDetail(j){
+  document.getElementById("detailTitle").textContent = "Job · " + j.name;
+  document.getElementById("detailSummary").innerHTML =
+    `${stateEl(j.state)}`+
+    `<span class="accent">· ${j.cracked}/${j.total} cracked</span>`+
+    (j.finished_at?`<span class="dim">· finished ${new Date(j.finished_at).toLocaleString()}</span>`:"")+
+    (j.archived?`<span class="warn">· archived</span>`:"");
+  document.getElementById("detailTabs").innerHTML = `<button class="on">Cracked (${j.cracked})</button>`;
+  document.getElementById("detailCtl").innerHTML = "";
+  document.getElementById("chunksTable").style.display="none";
+  document.getElementById("crackedTable").style.display="table";
+  document.getElementById("detailAgg").style.display="none";
+  if(can("view_plaintext")) loadCracked(j.hashlist_id);
+  else document.getElementById("crackedBody").innerHTML=`<tr><td colspan="2" class="empty">your role can't view plaintext</td></tr>`;
 }
 
 function renderChunks(tasks){
@@ -678,13 +773,48 @@ function renderChunks(tasks){
     : `<span class="good">${running} chunk(s) running</span>`;
 }
 
+// Remote-agent devices are named "<agent>/<device>" (see server to_device_view);
+// locally-collected devices have no prefix. The host is the part before the
+// first "/", or "this server" for local devices.
+function devHostOf(name){ const i=String(name).indexOf("/"); return i>=0 ? name.slice(0,i) : "this server"; }
+function devLabelOf(name){ const i=String(name).indexOf("/"); return i>=0 ? name.slice(i+1) : name; }
+
+let LAST_DEVS = [];
 function renderDevices(devs){
-  document.getElementById("devNote").textContent = devs.length ? (devs.length+" device(s)") : "";
+  LAST_DEVS = devs;
+  const title=document.getElementById("devicesTitle");
+  title.classList.toggle("on", S.devGroup);
+  const tabs=document.getElementById("devTabs"), note=document.getElementById("devNote");
+  if(!devs.length){
+    tabs.style.display="none"; note.textContent="";
+    document.getElementById("devBody").innerHTML=`<tr><td colspan="7" class="empty">no devices sampled yet</td></tr>`;
+    return;
+  }
+  if(!S.devGroup){
+    tabs.style.display="none";
+    note.textContent = devs.length+" device(s)";
+    renderDevRows(devs, false);
+    return;
+  }
+  // Grouped: one tab per host.
+  const hosts=[], byHost=new Map();
+  for(const d of devs){ const h=devHostOf(d.name); if(!byHost.has(h)){ byHost.set(h,[]); hosts.push(h); } byHost.get(h).push(d); }
+  if(!hosts.includes(S.devHost)) S.devHost=hosts[0];
+  tabs.style.display="flex";
+  tabs.innerHTML = hosts.map(h=>
+    `<button data-h="${esc(h)}" class="${h===S.devHost?"on":""}">${esc(h)}<span class="dim">${byHost.get(h).length}</span></button>`
+  ).join("");
+  [...tabs.querySelectorAll("button")].forEach(b=>b.onclick=()=>{ S.devHost=b.getAttribute("data-h"); renderDevices(LAST_DEVS); });
+  note.textContent = hosts.length+" host(s) · "+devs.length+" device(s)";
+  renderDevRows(byHost.get(S.devHost)||[], true);
+}
+function renderDevRows(devs, stripHost){
   const body=document.getElementById("devBody");
-  if(!devs.length){ body.innerHTML=`<tr><td colspan="7" class="empty">no devices sampled yet</td></tr>`; return; }
+  if(!devs.length){ body.innerHTML=`<tr><td colspan="7" class="empty">no devices on this host</td></tr>`; return; }
   body.innerHTML = devs.map(d=>{
     const tc = d.temp>=85?"bad":d.temp>=75?"warn":"good";
-    return `<tr><td>${esc(d.name)}</td>
+    const nm = stripHost ? devLabelOf(d.name) : d.name;
+    return `<tr><td>${esc(nm)}</td>
       <td class="num ${tc}">${d.temp>0?d.temp+"°C":"—"}</td>
       <td class="num accent">${d.fan>0?d.fan+"%":"—"}</td>
       <td>${bar((+d.util||0)/100,"running")}</td>
@@ -693,6 +823,12 @@ function renderDevices(devs){
       <td class="num">${fmtSpeed(d.hashrate)}</td></tr>`;
   }).join("");
 }
+// Clicking the "Devices" heading toggles grouped-by-host vs the flat list.
+document.getElementById("devicesTitle").onclick=()=>{
+  S.devGroup=!S.devGroup;
+  localStorage.setItem("fj_dev_group", S.devGroup?"1":"0");
+  renderDevices(LAST_DEVS);
+};
 
 // Agent status dot + styled name. online=green bold, away=gray italic,
 // error=red bold underline, busy=orange bold (multi-slot agent near overload).
@@ -926,7 +1062,21 @@ async function revokeApiKey(id){
   try{ await api("/auth/api-keys/"+id,{method:"DELETE"}); loadApiKeys(); }
   catch(err){ flash("revoke failed: "+err.message,true); }
 }
-document.getElementById("userBtn").onclick=openKeys;
+// Username opens a small menu (API docs / API keys) instead of jumping straight
+// to the keys dialog, so the API-docs link lives under the username.
+function toggleUserMenu(force){
+  const m=document.getElementById("userMenu"), btn=document.getElementById("userBtn");
+  const show = force!==undefined ? force : m.style.display==="none";
+  m.style.display = show ? "flex":"none";
+  btn.setAttribute("aria-expanded", show?"true":"false");
+}
+document.getElementById("userBtn").onclick=e=>{ e.stopPropagation(); toggleUserMenu(); };
+document.getElementById("menuKeys").onclick=()=>{ toggleUserMenu(false); openKeys(); };
+document.addEventListener("click", e=>{
+  const w=document.querySelector(".usermenu-wrap");
+  if(w && !w.contains(e.target)) toggleUserMenu(false);
+});
+document.addEventListener("keydown", e=>{ if(e.key==="Escape") toggleUserMenu(false); });
 document.getElementById("keysClose").onclick=closeKeys;
 document.getElementById("keysModal").onclick=e=>{ if(e.target.id==="keysModal") closeKeys(); };
 document.getElementById("keysForm").onsubmit=createApiKey;
