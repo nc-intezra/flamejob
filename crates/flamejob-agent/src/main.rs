@@ -47,11 +47,34 @@ struct Args {
     #[arg(long, env = "FJ_AGENT_NO_GPU_METRICS")]
     no_gpu_metrics: bool,
     /// Actively manage NVIDIA fan speed under load via nvidia-settings — disables
-    /// the driver's auto fan control while a job runs and drives the fan to hold
-    /// the GPU temperature in 85–95% of its max rated temp (needs an X display
-    /// and `Coolbits` enabled). Off by default.
+    /// the driver's auto fan control while a job runs and runs a closed-loop
+    /// controller that holds the core at `--fan-target` (needs an X display and
+    /// `Coolbits` enabled). Off by default.
     #[arg(long, env = "FJ_AGENT_FAN_CONTROL")]
     fan_control: bool,
+    /// Core temperature (°C) the fan controller holds under load.
+    #[arg(long, env = "FJ_AGENT_FAN_TARGET", default_value_t = 75)]
+    fan_target: i32,
+    /// Minimum fan speed (%) the controller will command.
+    #[arg(long, env = "FJ_AGENT_FAN_MIN", default_value_t = 30)]
+    fan_min: i32,
+    /// Maximum fan speed (%) the controller will command.
+    #[arg(long, env = "FJ_AGENT_FAN_MAX", default_value_t = 100)]
+    fan_max: i32,
+    /// Overheat trip (°C): at/above this the task is stopped and the agent is
+    /// flagged. Defaults to just below each GPU's rated slowdown temperature.
+    #[arg(long, env = "FJ_AGENT_FAN_CRITICAL")]
+    fan_critical: Option<i32>,
+    /// Dead band (°C) around the target within which the fan is left unchanged.
+    #[arg(long, env = "FJ_AGENT_FAN_DEADBAND", default_value_t = gpu::FAN_DEADBAND_DEFAULT)]
+    fan_deadband: i32,
+    /// Maximum fan-speed decrease (%) per controller tick (ramps down gently).
+    #[arg(long, env = "FJ_AGENT_FAN_DOWN_STEP", default_value_t = gpu::FAN_DOWN_STEP_DEFAULT)]
+    fan_down_step: i32,
+    /// Memory-junction target (°C) for VRAM-aware control. Unset disables it;
+    /// currently inert (no GeForce memory-temp sensor is wired in yet).
+    #[arg(long, env = "FJ_AGENT_FAN_MEM_TARGET")]
+    fan_mem_target: Option<i32>,
 }
 
 #[tokio::main]
@@ -212,6 +235,17 @@ async fn run(args: &Args, cert_pem: String) -> Result<()> {
         );
     }
 
+    // Build the fan-control config once (None = controller disabled).
+    let fan_cfg: Option<gpu::FanConfig> = args.fan_control.then_some(gpu::FanConfig {
+        target_temp: args.fan_target,
+        min_fan: args.fan_min,
+        max_fan: args.fan_max,
+        critical_override: args.fan_critical,
+        deadband: args.fan_deadband,
+        down_step: args.fan_down_step,
+        mem_target: args.fan_mem_target,
+    });
+
     while let Some(msg) = stream.next().await {
         let msg = match msg {
             Ok(Message::Text(t)) => serde_json::from_str::<ServerMsg>(&t).ok(),
@@ -252,18 +286,9 @@ async fn run(args: &Args, cert_pem: String) -> Result<()> {
                 let server = args.server.clone();
                 let cert = cert_pem.clone();
                 let gpus = gpus.clone();
-                let fan_control = args.fan_control;
                 tokio::spawn(async move {
                     run_task(
-                        runner,
-                        server,
-                        cert,
-                        task,
-                        out_tx,
-                        data_dir,
-                        current,
-                        gpus,
-                        fan_control,
+                        runner, server, cert, task, out_tx, data_dir, current, gpus, fan_cfg,
                     )
                     .await;
                 });
@@ -379,7 +404,7 @@ async fn run_task(
     data_dir: PathBuf,
     current: Arc<Mutex<Option<(Uuid, RunHandle)>>>,
     gpus: Arc<Vec<gpu::Gpu>>,
-    fan_control: bool,
+    fan_cfg: Option<gpu::FanConfig>,
 ) {
     let task_id = task.task_id;
     // Materialize the hash lines the server shipped inline.
@@ -430,6 +455,10 @@ async fn run_task(
 
     let mut sys = sysinfo::System::new();
     let mut last = TaskState::Running;
+    // Per-GPU fan-controller state, persisted across ticks for this task.
+    let mut fan_states: std::collections::HashMap<u32, gpu::FanState> =
+        std::collections::HashMap::new();
+    let mut overheated = false;
     while let Some(u) = rx.recv().await {
         out_tx
             .send(AgentMsg::Progress {
@@ -446,16 +475,39 @@ async fn run_task(
         // hashrate shows next to the card doing the work, not on the CPU row.
         let mut gpu_samples = gpu::sample(&gpus).await;
         let cpu_hashrate = assign_gpu_hashrates(&mut gpu_samples, &u.device_speeds, u.speed);
-        if fan_control && !gpu_samples.is_empty() {
-            gpu::apply_fan_curve(&gpus, &gpu_samples).await;
+        if let Some(cfg) = &fan_cfg {
+            if !gpu_samples.is_empty() {
+                if let Some(reason) =
+                    gpu::drive_fans(&gpus, &gpu_samples, cfg, &mut fan_states).await
+                {
+                    // Overheat: stop the run so the card can cool. The server marks
+                    // the agent on Error and the scheduler requeues the chunk.
+                    tracing::warn!(%reason, "overheat protection tripped; stopping task");
+                    out_tx
+                        .send(AgentMsg::Error {
+                            task_id: Some(task_id),
+                            message: format!("overheat protection: {reason}; task stopped"),
+                        })
+                        .await
+                        .ok();
+                    if let Some((_, handle)) = current.lock().await.as_ref() {
+                        let _ = runner.cancel(handle).await;
+                    }
+                    last = TaskState::Failed;
+                    overheated = true;
+                }
+            }
         }
         let mut samples = vec![host_metric(&mut sys, cpu_hashrate)];
         samples.extend(gpu_samples);
         out_tx.send(AgentMsg::Metrics { samples }).await.ok();
+        if overheated {
+            break; // keep last = Failed set above
+        }
         last = u.state;
     }
     // Load is off; hand the fans back to the driver's automatic control.
-    if fan_control && !gpus.is_empty() {
+    if fan_cfg.is_some() && !gpus.is_empty() {
         gpu::reset_fans(&gpus).await;
     }
 
