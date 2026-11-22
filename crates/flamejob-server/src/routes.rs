@@ -47,6 +47,7 @@ pub fn router(state: AppState) -> Router {
         .route("/jobs/:id/pause", post(pause_job))
         .route("/jobs/:id/resume", post(resume_job))
         .route("/jobs/:id/cancel", post(cancel_job))
+        .route("/jobs/:id/pin", post(pin_job).delete(unpin_job))
         .route("/hashlists", get(list_hashlists).post(create_hashlist))
         .route("/hashlists/:id/cracked", get(list_cracked))
         .route("/hashlists/:id/hashes", post(import_hashes))
@@ -304,7 +305,18 @@ async fn list_jobs(
         sqlx::query_as(&format!("{JOB_SELECT} ORDER BY j.priority, j.created_at"))
             .fetch_all(&state.db)
             .await?;
-    Ok(Json(rows.into_iter().map(job_view).collect()))
+    let running = running_agents_by_job(&state).await;
+    Ok(Json(
+        rows.into_iter()
+            .map(|r| {
+                let mut v = job_view(r);
+                if let Some(names) = running.get(&v.id) {
+                    v.running_agents = names.clone();
+                }
+                v
+            })
+            .collect(),
+    ))
 }
 
 #[utoipa::path(
@@ -355,6 +367,9 @@ async fn create_job(
         speed: 0,
         cracked: 0,
         total,
+        pinned_agent_id: None,
+        pinned_agent: None,
+        running_agents: Vec::new(),
     };
     Ok((StatusCode::CREATED, Json(view)))
 }
@@ -400,12 +415,22 @@ async fn get_job(
         .fetch_optional(&state.db)
         .await?;
     let row = row.ok_or_else(|| AppError::NotFound("job not found".into()))?;
-    Ok(Json(job_view(row)))
+    let mut v = job_view(row);
+    if let Some(names) = running_agents_by_job(&state).await.get(&v.id) {
+        v.running_agents = names.clone();
+    }
+    Ok(Json(v))
 }
 
 #[derive(serde::Deserialize, utoipa::ToSchema)]
 pub struct PatchJob {
     pub priority: i32,
+}
+
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+pub struct PinRequest {
+    /// Agent id to pin this job to; the job's chunks will only run on this agent.
+    pub agent_id: Uuid,
 }
 
 #[utoipa::path(
@@ -472,7 +497,9 @@ async fn set_job_state(
         .ok()
         .and_then(|v| v.as_str().map(str::to_string))
         .unwrap_or_else(|| "queued".into());
-    sqlx::query("UPDATE jobs SET state = $1::job_state WHERE id = $2")
+    // Leaving the running state: drop the stale ETA so a paused/cancelled/
+    // re-queued job doesn't keep showing a now-past completion estimate.
+    sqlx::query("UPDATE jobs SET state = $1::job_state, est_completion = NULL WHERE id = $2")
         .bind(to_str)
         .bind(id)
         .execute(&state.db)
@@ -481,6 +508,58 @@ async fn set_job_state(
         job_id: id,
         state: to,
     });
+    Ok(StatusCode::ACCEPTED)
+}
+
+#[utoipa::path(
+    post, path = "/jobs/{id}/pin", tag = "jobs", security(("bearer" = [])),
+    params(("id" = Uuid, Path, description = "Job id")),
+    request_body = PinRequest,
+    responses(
+        (status = 202, description = "Job pinned to the agent"),
+        (status = 404, description = "Job or agent not found")
+    )
+)]
+async fn pin_job(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(req): Json<PinRequest>,
+) -> Result<StatusCode, AppError> {
+    auth.require(Capability::ManageAgents)?;
+    // Validate the agent exists so we never pin to a dangling id.
+    let exists: Option<Uuid> = sqlx::query_scalar("SELECT id FROM agents WHERE id = $1")
+        .bind(req.agent_id)
+        .fetch_optional(&state.db)
+        .await?;
+    exists.ok_or_else(|| AppError::NotFound("agent not found".into()))?;
+    let updated = sqlx::query("UPDATE jobs SET pinned_agent_id = $1 WHERE id = $2")
+        .bind(req.agent_id)
+        .bind(id)
+        .execute(&state.db)
+        .await?
+        .rows_affected();
+    if updated == 0 {
+        return Err(AppError::NotFound("job not found".into()));
+    }
+    Ok(StatusCode::ACCEPTED)
+}
+
+#[utoipa::path(
+    delete, path = "/jobs/{id}/pin", tag = "jobs", security(("bearer" = [])),
+    params(("id" = Uuid, Path, description = "Job id")),
+    responses((status = 202, description = "Job unpinned (runs on any agent)"))
+)]
+async fn unpin_job(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, AppError> {
+    auth.require(Capability::ManageAgents)?;
+    sqlx::query("UPDATE jobs SET pinned_agent_id = NULL WHERE id = $1")
+        .bind(id)
+        .execute(&state.db)
+        .await?;
     Ok(StatusCode::ACCEPTED)
 }
 
@@ -1019,8 +1098,9 @@ const JOB_SELECT: &str = "SELECT j.id, j.name, j.hashlist_id, j.state::text, j.p
         ELSE t.progress*GREATEST(t.keyspace_len,1)::float8 END) \
         / NULLIF(SUM(GREATEST(t.keyspace_len,1)),0) FROM tasks t WHERE t.job_id=j.id),0)::float8 AS progress, \
     COALESCE((SELECT SUM(speed) FROM tasks t WHERE t.job_id=j.id AND t.state='running'),0)::int8 AS speed, \
-    h.cracked, h.total \
-    FROM jobs j JOIN hashlists h ON h.id=j.hashlist_id";
+    h.cracked, h.total, j.pinned_agent_id, ap.name \
+    FROM jobs j JOIN hashlists h ON h.id=j.hashlist_id \
+    LEFT JOIN agents ap ON ap.id=j.pinned_agent_id";
 
 type JobAgg = (
     Uuid,
@@ -1034,6 +1114,8 @@ type JobAgg = (
     i64,
     i32,
     i32,
+    Option<Uuid>,
+    Option<String>,
 );
 
 fn job_view(r: JobAgg) -> JobView {
@@ -1049,7 +1131,41 @@ fn job_view(r: JobAgg) -> JobView {
         speed: r.8,
         cracked: r.9,
         total: r.10,
+        pinned_agent_id: r.11,
+        pinned_agent: r.12,
+        // Filled in by the handler from the live agent hub (see running_agents).
+        running_agents: Vec::new(),
     }
+}
+
+/// Resolve, per job, the names of the agent(s) (or the local host) currently
+/// running its chunks. Agent tasks are looked up in the live hub; when the
+/// local runner is in use, running chunks are attributed to the configured
+/// local host name. Returns job_id -> distinct agent names (in first-seen order).
+async fn running_agents_by_job(state: &AppState) -> std::collections::HashMap<Uuid, Vec<String>> {
+    use std::collections::HashMap;
+    let assignments = state.agents.assignments().await; // task_id -> agent name
+    let local_mode = state.cfg.scheduler.runner != "remote";
+    let local_name = state.cfg.scheduler.local_agent_name.clone();
+    let running: Vec<(Uuid, Uuid)> =
+        sqlx::query_as("SELECT job_id, id FROM tasks WHERE state = 'running'")
+            .fetch_all(&state.db)
+            .await
+            .unwrap_or_default();
+    let mut out: HashMap<Uuid, Vec<String>> = HashMap::new();
+    for (job_id, task_id) in running {
+        let name = assignments
+            .get(&task_id)
+            .cloned()
+            .or_else(|| local_mode.then(|| local_name.clone()));
+        if let Some(name) = name {
+            let v = out.entry(job_id).or_default();
+            if !v.contains(&name) {
+                v.push(name);
+            }
+        }
+    }
+    out
 }
 
 fn parse_task_state(s: &str) -> TaskState {

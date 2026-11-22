@@ -19,6 +19,9 @@ pub struct RunnerTask {
     pub keyspace_offset: i64,
     pub keyspace_len: i64,
     pub extra_args: Vec<String>,
+    /// When set, this chunk may only run on the agent with this id (a job pinned
+    /// to a specific agent). `None` means any free agent. Ignored by LocalRunner.
+    pub pinned_agent_id: Option<Uuid>,
 }
 
 /// Per-compute-device speed, as reported in hashcat's `--status-json` `devices`

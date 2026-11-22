@@ -125,6 +125,31 @@
   #jobsTable tbody tr{cursor:pointer}
   #jobsTable tbody tr:hover{background:var(--sel)}
 
+  /* Agent column: shown only for roles that act on jobs (superadmin/admin/
+     operator), toggled by the .show-agent class on the table. */
+  .agentcol{display:none}
+  #jobsTable.show-agent .agentcol{display:table-cell}
+  .agent-cell{font-family:var(--mono);font-size:12px;color:var(--ink)}
+  .agent-cell.none{color:var(--dim)}
+  .agent-pin-badge{color:var(--warn)}
+  /* A job name that opens the pin menu on click (manage_agents only). */
+  .jobname.pinnable{cursor:pointer;border-bottom:1px dashed var(--border)}
+  .jobname.pinnable:hover{color:var(--warn);border-bottom-color:var(--warn)}
+  /* Pin menu popover. */
+  #pinMenu{position:fixed;z-index:50;min-width:180px;max-height:50vh;overflow:auto;
+    background:var(--panel);border:1px solid var(--border);border-radius:8px;
+    box-shadow:0 8px 28px rgba(0,0,0,.45);padding:4px;font-size:12px;display:none}
+  #pinMenu .pm-head{color:var(--dim);font-size:10px;text-transform:uppercase;
+    letter-spacing:.06em;padding:5px 8px 3px}
+  #pinMenu button{display:flex;width:100%;align-items:center;gap:8px;justify-content:space-between;
+    background:none;border:none;color:var(--ink);text-align:left;padding:6px 8px;border-radius:6px;
+    cursor:pointer;font-size:12px;font-family:var(--mono)}
+  #pinMenu button:hover{background:var(--sel)}
+  #pinMenu button .pm-dot{width:7px;height:7px;border-radius:50%;background:var(--dim);flex:0 0 auto}
+  #pinMenu button .pm-dot.online{background:var(--good)}
+  #pinMenu button.pm-current{color:var(--warn)}
+  #pinMenu .pm-sep{height:1px;background:var(--border);margin:4px 0}
+
   .state{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12px}
   .dot{width:8px;height:8px;border-radius:50%;background:currentColor;display:inline-block}
   .s-running,.s-completed,.s-done{color:var(--good)}
@@ -306,7 +331,7 @@
       <div class="head"><span class="t">Jobs</span><span class="ctl" id="jobsCtl"></span></div>
       <div class="body">
         <table id="jobsTable">
-          <thead><tr><th>Job</th><th>State</th><th>Progress</th><th>Speed</th><th>ETA</th><th>Cracked</th></tr></thead>
+          <thead><tr><th>Job</th><th>State</th><th>Progress</th><th>Speed</th><th>ETA</th><th>Cracked</th><th class="agentcol">Agent</th></tr></thead>
           <tbody id="jobsBody"></tbody>
         </table>
       </div>
@@ -372,6 +397,7 @@
     <span style="margin-left:auto" class="dim" id="lastUpd"></span>
   </footer>
 </div>
+<div id="pinMenu"></div>
 
 <script>
 "use strict";
@@ -380,7 +406,7 @@ const CFG = Object.assign({apiBase:null, apiPort:8443, theme:"dark"}, "__FJCFG__
 // ---- role -> capability map (mirrors flamejob-core::model) ----
 const ROLE_CAPS = {
   superadmin:["manage_users","submit_jobs","ingest","view_plaintext","view_stats","view_jobs","manage_directory","manage_agents"],
-  admin:["manage_users","manage_agents"],
+  admin:["manage_users","manage_agents","view_jobs"],
   operator:["submit_jobs","ingest","view_plaintext","view_stats","view_jobs"],
   viewer:["view_stats","view_jobs"],
 };
@@ -446,8 +472,8 @@ function shortNum(n){ n=+n||0; const f=n;
   if(f>=1e12)return (f/1e12).toFixed(1)+"T"; if(f>=1e9)return (f/1e9).toFixed(1)+"G";
   if(f>=1e6)return Math.round(f/1e6)+"M"; if(f>=1e3)return Math.round(f/1e3)+"k"; return ""+n; }
 function fmtEta(eta){ if(!eta)return "—"; const secs=Math.floor((new Date(eta)-new Date())/1000);
-  if(secs<=0)return "soon"; if(secs>=3600)return Math.floor(secs/3600)+"h"+String(Math.floor(secs%3600/60)).padStart(2,"0")+"m";
-  return Math.floor(secs/60)+"m"+String(secs%60).padStart(2,"0")+"s"; }
+  if(secs<=0)return "soon"; const p=n=>String(n).padStart(2,"0");
+  return p(Math.floor(secs/3600))+":"+p(Math.floor(secs%3600/60))+":"+p(secs%60); }
 function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 function stateEl(s){ return `<span class="state s-${esc(s)}"><span class="dot"></span>${esc(s)}</span>`; }
 function bar(p, state){ p=Math.max(0,Math.min(1,+p||0)); const pct=Math.round(p*100);
@@ -549,18 +575,31 @@ function renderJobs(jobs){
   JOBS = jobs;
   document.getElementById("cRunning").textContent = jobs.filter(j=>j.state==="running").length + " running";
   document.getElementById("cQueued").textContent  = jobs.filter(j=>j.state==="queued").length + " queued";
+  const table=document.getElementById("jobsTable");
+  table.classList.toggle("show-agent", canSeeAgent());
+  const cols = canSeeAgent()?7:6;
   const body=document.getElementById("jobsBody");
-  if(!jobs.length){ body.innerHTML = `<tr><td colspan="6" class="empty">no jobs in the queue</td></tr>`; return; }
+  if(!jobs.length){ body.innerHTML = `<tr><td colspan="${cols}" class="empty">no jobs in the queue</td></tr>`; return; }
+  const nameCell = j => canPin()
+    ? `<span class="jobname pinnable" data-id="${esc(j.id)}" title="click to pin to an agent">${esc(j.name)}</span>`
+    : `<span class="jobname">${esc(j.name)}</span>`;
   body.innerHTML = jobs.map(j=>`
     <tr data-id="${esc(j.id)}" class="${j.id===S.selected?"rowsel":""}">
-      <td>${esc(j.name)}</td>
+      <td>${nameCell(j)}</td>
       <td>${stateEl(j.state)}</td>
       <td>${bar(j.progress, j.state)}</td>
       <td class="num ${j.speed>0?"":"dim"}">${fmtSpeed(j.speed)}</td>
       <td class="num ${j.est_completion?"warn":"dim"}">${fmtEta(j.est_completion)}</td>
       <td class="num">${j.cracked}/${j.total}</td>
+      <td class="agentcol">${agentCell(j)}</td>
     </tr>`).join("");
   [...body.querySelectorAll("tr[data-id]")].forEach(tr=>tr.onclick=()=>selectJob(tr.getAttribute("data-id")));
+  // Clicking a pinnable job name opens the pin menu instead of selecting the row.
+  [...body.querySelectorAll(".jobname.pinnable")].forEach(el=>el.onclick=ev=>{
+    ev.stopPropagation();
+    const j=JOBS.find(x=>x.id===el.getAttribute("data-id"));
+    if(j) openPinMenu(j, el);
+  });
   if(S.selected){ const j=jobs.find(x=>x.id===S.selected); if(j) renderDetailSummary(j); }
 }
 
@@ -572,11 +611,17 @@ function selectJob(id){ S.selected=id; S.detailView="chunks"; renderJobs(JOBS);
 function renderDetailSummary(j){
   S.selJob=j;
   document.getElementById("detailTitle").textContent = "Job · " + j.name;
+  const agentBit = canSeeAgent()
+    ? (j.pinned_agent
+        ? `<span class="warn">· \u{1F4CC} ${esc(j.pinned_agent)}</span>`
+        : ((j.running_agents||[]).length ? `<span class="dim">· on ${esc(j.running_agents.join(", "))}</span>` : ""))
+    : "";
   document.getElementById("detailSummary").innerHTML =
     `${stateEl(j.state)} <span class="num">${Math.round(j.progress*100)}%</span>`+
     `<span class="dim">· ${fmtSpeed(j.speed)}</span>`+
     `<span class="warn">· ETA ${fmtEta(j.est_completion)}</span>`+
-    `<span class="accent">· ${j.cracked}/${j.total} cracked</span>`;
+    `<span class="accent">· ${j.cracked}/${j.total} cracked</span>`+
+    agentBit;
   // view tabs: chunks always; cracked plaintext only with ViewPlaintext.
   const tabs=document.getElementById("detailTabs");
   let th = `<button data-v="chunks" class="${S.detailView==="chunks"?"on":""}">Chunks</button>`;
@@ -885,6 +930,56 @@ document.getElementById("userBtn").onclick=openKeys;
 document.getElementById("keysClose").onclick=closeKeys;
 document.getElementById("keysModal").onclick=e=>{ if(e.target.id==="keysModal") closeKeys(); };
 document.getElementById("keysForm").onsubmit=createApiKey;
+
+// ---- job -> agent pinning (superadmin/admin) ----
+// Left-clicking a job name opens a menu to pin the job to a specific agent;
+// the scheduler then runs that job's chunks only on the chosen agent.
+let PIN_AGENTS = [];
+function canPin(){ return can("manage_agents"); }
+function canSeeAgent(){ return can("manage_agents") || can("submit_jobs"); }
+function agentCell(j){
+  if(j.pinned_agent) return `<span class="agent-cell"><span class="agent-pin-badge">\u{1F4CC}</span> ${esc(j.pinned_agent)}</span>`;
+  const run=(j.running_agents||[]);
+  if(run.length) return `<span class="agent-cell">${esc(run.join(", "))}</span>`;
+  return `<span class="agent-cell none">—</span>`;
+}
+function closePinMenu(){ const m=document.getElementById("pinMenu"); if(m) m.style.display="none"; }
+document.addEventListener("click", e=>{ const m=document.getElementById("pinMenu");
+  if(m && m.style.display==="block" && !m.contains(e.target) && !e.target.classList.contains("jobname")) closePinMenu(); });
+document.addEventListener("keydown", e=>{ if(e.key==="Escape") closePinMenu(); });
+
+async function openPinMenu(job, anchor){
+  const m=document.getElementById("pinMenu");
+  try{ PIN_AGENTS = await api("/agents"); }catch(err){ flash("could not load agents: "+err.message, true); return; }
+  const online=new Set(PIN_AGENTS.filter(a=>a.status==="online").map(a=>a.id));
+  let html=`<div class="pm-head">Pin "${esc(job.name)}" to agent</div>`;
+  html+=`<button data-act="unpin" class="${job.pinned_agent_id?"":"pm-current"}"><span>Auto (any agent)</span>${job.pinned_agent_id?"":"<span>✓</span>"}</button>`;
+  html+=`<div class="pm-sep"></div>`;
+  if(!PIN_AGENTS.length){ html+=`<div class="pm-head" style="text-transform:none">no agents enrolled</div>`; }
+  for(const a of PIN_AGENTS){
+    const cur=a.id===job.pinned_agent_id;
+    html+=`<button data-act="pin" data-agent="${esc(a.id)}" class="${cur?"pm-current":""}">`+
+      `<span><span class="pm-dot ${online.has(a.id)?"online":""}"></span> ${esc(a.name)}</span>`+
+      `<span>${cur?"✓":esc(a.status)}</span></button>`;
+  }
+  m.innerHTML=html;
+  m.style.display="block";
+  // Position near the clicked name, kept within the viewport.
+  const r=anchor.getBoundingClientRect(); m.style.visibility="hidden"; m.style.left="0"; m.style.top="0";
+  const mw=m.offsetWidth, mh=m.offsetHeight;
+  m.style.left=Math.min(r.left, window.innerWidth-mw-8)+"px";
+  m.style.top=(r.bottom+4+mh>window.innerHeight ? Math.max(8,r.top-mh-4) : r.bottom+4)+"px";
+  m.style.visibility="visible";
+  m.querySelectorAll("button").forEach(b=>b.onclick=async()=>{
+    closePinMenu();
+    try{
+      if(b.getAttribute("data-act")==="unpin") await api("/jobs/"+job.id+"/pin",{method:"DELETE"});
+      else await api("/jobs/"+job.id+"/pin",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({agent_id:b.getAttribute("data-agent")})});
+      flash("pin updated");
+      tick();
+    }catch(err){ flash("pin failed: "+err.message, true); }
+  });
+}
 
 // ---- resume a saved session ----
 (function(){ const t=localStorage.getItem("fj_token"); if(t){ S.token=t; start().catch(()=>logout()); } })();

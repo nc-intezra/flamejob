@@ -114,6 +114,11 @@ pub enum AgentMsg {
         speed: i64,
         recovered: i64,
         state: String,
+        /// hashcat's estimated completion time for this chunk, if it reports one.
+        /// Forwarded so the server can show an ETA even when it can't derive one
+        /// from keyspace/speed (e.g. a single unknown-keyspace chunk).
+        #[serde(default)]
+        eta: Option<chrono::DateTime<chrono::Utc>>,
     },
     /// Cracked hashes for a task.
     Cracked {

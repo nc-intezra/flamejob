@@ -388,6 +388,7 @@ impl Scheduler {
             keyspace_offset: 0,
             keyspace_len: 0,
             extra_args: cfg.extra_args.clone(),
+            pinned_agent_id: None, // keyspace probe: any agent may answer
         };
         let total_keyspace = self
             .runner
@@ -431,6 +432,14 @@ impl Scheduler {
             Some(i) => i,
             None => return false,
         };
+        // Read the pin fresh at dispatch time so pinning a job mid-run takes
+        // effect on its next chunk (the remote runner honors it; local ignores).
+        let pinned_agent_id: Option<Uuid> =
+            sqlx::query_scalar::<_, Option<Uuid>>("SELECT pinned_agent_id FROM jobs WHERE id = $1")
+                .bind(job_id)
+                .fetch_one(&self.state.db)
+                .await
+                .unwrap_or(None);
         let task = RunnerTask {
             task_id,
             hash_type: inputs.hash_type,
@@ -441,6 +450,7 @@ impl Scheduler {
             keyspace_offset: offset,
             keyspace_len: len,
             extra_args: inputs.extra_args.clone(),
+            pinned_agent_id,
         };
         // Mark running before dispatch so the next fill iteration won't re-pick it.
         let _ = self.set_task(task_id, "running").await;
@@ -653,7 +663,8 @@ impl Scheduler {
         // Idempotent: only the first transition out of a non-terminal state wins,
         // so concurrent chunk finalizers don't double-finalize or double-publish.
         let changed = sqlx::query(
-            "UPDATE jobs SET state = $2::job_state, error = $3, finished_at = now() \
+            "UPDATE jobs SET state = $2::job_state, error = $3, finished_at = now(), \
+             est_completion = NULL \
              WHERE id = $1 AND state NOT IN ('completed','exhausted','cancelled','error')",
         )
         .bind(job_id)

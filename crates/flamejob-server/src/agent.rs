@@ -51,7 +51,7 @@ struct HubInner {
     /// task_id -> agent currently running it.
     assigned: HashMap<Uuid, Uuid>,
     /// Chunk tasks waiting for a free agent slot.
-    queue: VecDeque<AgentTask>,
+    queue: VecDeque<QueuedTask>,
     /// Outstanding keyspace probes.
     ks_waiters: HashMap<Uuid, oneshot::Sender<u64>>,
     /// Connected agents currently in an error condition (last frame was an
@@ -59,8 +59,15 @@ struct HubInner {
     errored: HashSet<Uuid>,
 }
 
+/// A chunk waiting in the queue, with the optional agent it's pinned to.
+#[derive(Clone)]
+struct QueuedTask {
+    task: AgentTask,
+    /// When set, this chunk may only be assigned to this agent.
+    pinned_agent_id: Option<Uuid>,
+}
+
 struct Conn {
-    #[allow(dead_code)]
     name: String,
     tx: mpsc::Sender<ServerMsg>,
     /// Free slots right now.
@@ -157,34 +164,61 @@ impl AgentHub {
     }
 
     /// Queue (and if possible immediately assign) a chunk task.
-    async fn dispatch(&self, task: AgentTask, sink: StatusSink) {
+    async fn dispatch(&self, task: AgentTask, pinned_agent_id: Option<Uuid>, sink: StatusSink) {
         let mut g = self.inner.lock().await;
         g.sinks.insert(task.task_id, sink);
-        g.queue.push_back(task);
+        g.queue.push_back(QueuedTask {
+            task,
+            pinned_agent_id,
+        });
         Self::drain(&mut g);
     }
 
-    /// Assign as many queued tasks as there are free agent slots.
+    /// Assign queued tasks to free agent slots. A pinned task is only placed on
+    /// its own agent; if that agent has no free slot the task stays queued (and
+    /// we move on to the next queued task) rather than blocking the whole queue.
     fn drain(g: &mut HubInner) {
-        while let Some(task) = g.queue.front().cloned() {
-            let Some((&agent_id, _)) = g.conns.iter().find(|(_, c)| c.slots > 0) else {
-                break;
+        let mut i = 0;
+        while i < g.queue.len() {
+            // Pick an eligible free agent: the pinned one, or any free agent.
+            let agent_id = match g.queue[i].pinned_agent_id {
+                Some(pin) => g.conns.get(&pin).filter(|c| c.slots > 0).map(|_| pin),
+                None => g.conns.iter().find(|(_, c)| c.slots > 0).map(|(&a, _)| a),
             };
-            g.queue.pop_front();
+            let Some(agent_id) = agent_id else {
+                i += 1; // nothing free for this task right now; leave it queued
+                continue;
+            };
+            let qt = g.queue.remove(i).expect("index in bounds");
             if let Some(c) = g.conns.get_mut(&agent_id) {
                 c.slots = c.slots.saturating_sub(1);
                 if c.tx
-                    .try_send(ServerMsg::Assign { task: task.clone() })
+                    .try_send(ServerMsg::Assign {
+                        task: qt.task.clone(),
+                    })
                     .is_ok()
                 {
-                    g.assigned.insert(task.task_id, agent_id);
+                    g.assigned.insert(qt.task.task_id, agent_id);
                 } else {
-                    // send failed: put it back and stop.
-                    g.queue.push_front(task);
-                    break;
+                    // Send failed: restore the slot and re-queue in place.
+                    c.slots += 1;
+                    g.queue.insert(i, qt);
+                    i += 1;
                 }
             }
+            // On success we removed element i, so i now indexes the next task.
         }
+    }
+
+    /// task_id -> name of the agent currently running it, for display.
+    pub async fn assignments(&self) -> HashMap<Uuid, String> {
+        let g = self.inner.lock().await;
+        g.assigned
+            .iter()
+            .filter_map(|(task_id, agent_id)| {
+                g.conns.get(agent_id).map(|c| (*task_id, c.name.clone()))
+            })
+            .collect()
     }
 
     /// Clone the status sink for a task so the caller can forward an update
@@ -325,8 +359,11 @@ impl Runner for RemoteRunner {
     async fn start(&self, task: &RunnerTask, tx: StatusSink) -> CoreResult<RunHandle> {
         let at = self.to_agent_task(task).await;
         let task_id = task.task_id;
-        self.hub.dispatch(at, tx).await;
-        tracing::info!(%task_id, "chunk dispatched to agent pool");
+        self.hub.dispatch(at, task.pinned_agent_id, tx).await;
+        match task.pinned_agent_id {
+            Some(agent) => tracing::info!(%task_id, %agent, "chunk dispatched (pinned agent)"),
+            None => tracing::info!(%task_id, "chunk dispatched to agent pool"),
+        }
         Ok(RunHandle { task_id })
     }
 
@@ -439,7 +476,9 @@ pub async fn list_agents(
     State(state): State<AppState>,
     auth: AuthUser,
 ) -> Result<Json<Vec<AgentInfo>>, AppError> {
-    auth.require(Capability::ViewStats)?;
+    // Admins manage agents but don't hold ViewStats; let either role list them
+    // (needed to populate the job-pinning menu).
+    auth.require_any(&[Capability::ViewStats, Capability::ManageAgents])?;
     let rows: Vec<(
         Uuid,
         String,
@@ -632,6 +671,7 @@ async fn handle_agent_msg(state: &AppState, agent_id: Uuid, agent_name: &str, ms
             speed,
             recovered,
             state: st,
+            eta,
         } => {
             if let Some(sink) = state.agents.sink_for(task_id).await {
                 let _ = sink
@@ -640,7 +680,7 @@ async fn handle_agent_msg(state: &AppState, agent_id: Uuid, agent_name: &str, ms
                         progress,
                         speed,
                         recovered,
-                        eta: None,
+                        eta,
                         state: parse_task_state(&st),
                         device_speeds: Vec::new(),
                     })
@@ -826,7 +866,7 @@ mod tests {
             keyspace_len: 0,
             extra_args: vec![],
         };
-        hub.dispatch(task, stx).await;
+        hub.dispatch(task, None, stx).await;
         assert_eq!(hub.capacity().await, 3);
     }
 
@@ -846,6 +886,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pinned_task_only_runs_on_its_agent() {
+        let hub = AgentHub::new();
+        let (a1, a2) = (Uuid::new_v4(), Uuid::new_v4());
+        // a1 has a free slot now; a2 is connected but has no free slot yet.
+        let (tx1, mut rx1) = mpsc::channel(8);
+        let (tx2, mut rx2) = mpsc::channel(8);
+        hub.register(a1, "gpu-1".into(), tx1).await;
+        hub.register(a2, "gpu-2".into(), tx2).await;
+        hub.set_ready(a1, 1).await;
+
+        // Dispatch a task pinned to a2 (which is full). It must NOT run on a1.
+        let pinned = mk_task();
+        let pinned_id = pinned.task_id;
+        let (s, _r) = mpsc::channel(8);
+        hub.dispatch(pinned, Some(a2), s).await;
+        assert!(
+            rx1.try_recv().is_err(),
+            "pinned task must not be assigned to the wrong agent"
+        );
+        assert!(!hub.assignments().await.values().any(|n| n == "gpu-1"));
+
+        // a2 frees a slot -> the pinned task is placed on a2.
+        hub.set_ready(a2, 1).await;
+        match rx2.try_recv() {
+            Ok(ServerMsg::Assign { task }) => assert_eq!(task.task_id, pinned_id),
+            other => panic!("expected pinned task assigned to a2, got {other:?}"),
+        }
+        assert_eq!(
+            hub.assignments().await.get(&pinned_id),
+            Some(&"gpu-2".into())
+        );
+    }
+
+    #[tokio::test]
     async fn agent_live_status_online_busy_error() {
         let hub = AgentHub::new();
         let a = Uuid::new_v4();
@@ -861,7 +935,7 @@ mod tests {
         // Load both slots -> fully loaded multi-slot agent reads as busy.
         for _ in 0..2 {
             let (s, _r) = mpsc::channel(8);
-            hub.dispatch(mk_task(), s).await;
+            hub.dispatch(mk_task(), None, s).await;
         }
         assert!(
             hub.live().await[&a].busy,

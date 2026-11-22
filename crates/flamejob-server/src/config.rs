@@ -63,6 +63,11 @@ pub struct SchedulerCfg {
     /// the fleet's capacity. 0 = unlimited. Default 8.
     #[serde(default = "default_max_concurrent_jobs")]
     pub max_concurrent_jobs: usize,
+    /// Display name for work run on this server host by the local runner (shown
+    /// as the executing "agent" in the dashboard when no agents are enrolled).
+    /// Defaults to the machine hostname.
+    #[serde(default = "default_local_agent_name")]
+    pub local_agent_name: String,
 }
 
 fn default_local_parallelism() -> usize {
@@ -71,6 +76,14 @@ fn default_local_parallelism() -> usize {
 
 fn default_max_concurrent_jobs() -> usize {
     8
+}
+
+fn default_local_agent_name() -> String {
+    std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "local-host".to_string())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -153,6 +166,7 @@ impl Default for Config {
                 runner: "local".into(),
                 local_parallelism: 1,
                 max_concurrent_jobs: 8,
+                local_agent_name: default_local_agent_name(),
             },
             telemetry: TelemetryCfg {
                 enabled: true,

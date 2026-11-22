@@ -517,6 +517,7 @@ async fn run_task(
                 speed: u.speed,
                 recovered: u.recovered,
                 state: state_str(u.state).into(),
+                eta: u.eta,
             })
             .await
             .ok();
@@ -608,6 +609,8 @@ fn runner_task(
         keyspace_offset: task.keyspace_offset,
         keyspace_len: task.keyspace_len,
         extra_args: task.extra_args.clone(),
+        // The agent runs whatever it's assigned; pinning is enforced server-side.
+        pinned_agent_id: None,
     }
 }
 

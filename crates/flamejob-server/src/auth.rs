@@ -71,6 +71,17 @@ impl AuthUser {
             Err(AppError::Forbidden(format!("missing capability {cap:?}")))
         }
     }
+
+    /// Allow the request if the user holds ANY of the given capabilities.
+    pub fn require_any(&self, caps: &[Capability]) -> Result<(), AppError> {
+        if caps.iter().any(|&c| roles_have(&self.roles, c)) {
+            Ok(())
+        } else {
+            Err(AppError::Forbidden(format!(
+                "missing any of capabilities {caps:?}"
+            )))
+        }
+    }
 }
 
 #[axum::async_trait]
