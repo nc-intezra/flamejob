@@ -4,6 +4,47 @@ All notable changes to flamejob are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.2] - 2026-11-22
+
+A dashboard reliability and layout release. It also rolls up two changes that
+merged after v1.3.1 without a version bump of their own: the inline Ember "fj"
+favicon (#32) and the Active Directory / LDAP integration design doc (#33).
+
+### Fixed
+- **Agent device metrics now stay live between jobs.** Agent-reported GPU
+  telemetry (temperature, fan, P-state, clocks, hashrate) only streamed while a
+  task was running, so after a job completed, paused, or was cancelled the
+  dashboard left the agent's cards frozen on their last in-job sample. The agent
+  now emits an idle telemetry heartbeat on a fixed interval whenever no task is
+  running, mirroring the server's local collector, so agent-connected hardware
+  tracks live the same way local hardware already did. Hashrate reads 0 while
+  idle; under load, telemetry still streams alongside task progress (carrying
+  per-card hashrate and driving fan control) and the heartbeat yields to it.
+- **Submit panel no longer shows its own scrollbars at 100% in a windowed
+  1080p browser.** The "Submit a job" and "Devices" regions were a touch too
+  short in a normal (non-fullscreen) viewport; a fixed slice of height (about
+  one select-field tall) now shifts from the "Jobs"/"Job detail" regions into
+  them so the form fits without scrolling.
+
+### Changed
+- **Submit panel layout.** The hash-file drop zone now spans the full width at
+  the top of the form, and the "Submit to agents" button sits beside the field
+  grid with its top aligned to the "Job name" field, rather than running the
+  full height of the panel alongside the drop zone.
+
+### Added
+- **`--metrics-interval-secs` / `FJ_AGENT_METRICS_INTERVAL_SECS`** (default 5) —
+  how often the agent reports device telemetry while idle.
+- Inline **Ember "fj" favicon** for the dashboard (#32): a scalable SVG with
+  font-independent vector glyphs over the ember-gradient tile, plus 16×16 and
+  32×32 PNG fallbacks, all inlined as data URIs (no external requests).
+
+### Docs
+- **Active Directory / LDAP integration design** (#33) — `docs/design/ad-ldap-integration.md`:
+  LDAPS/StartTLS search-then-bind, objectSID-keyed group→role mapping,
+  server-enforced per-agent pools/grants, and per-group fairness, framed as the
+  Phase 5 rollout onto the current auth/scheduler code.
+
 ## [1.3.1] - 2026-11-22
 
 Makes the v1.3.0 fan controller usable from an unprivileged agent, and stops it
