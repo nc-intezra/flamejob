@@ -48,13 +48,28 @@ FJ_AGENT_WORKLOAD=3
 #                              # GPU's rated slowdown temp. At/above it the task
 #                              # is stopped and the agent flagged until it cools.
 #
-# IMPORTANT: nvidia-settings needs a running X server with Coolbits enabled and a
-# DISPLAY this (headless) service can reach. Without the two lines below fan
-# control silently no-ops (telemetry still works). Set DISPLAY/XAUTHORITY to your
-# X server, enable Coolbits (e.g. `nvidia-xconfig --cool-bits=28`), and allow the
-# flamejob-agent user to access X (shared XAUTHORITY or xhost).
+# PRIVILEGE: the driver only allows fan control from root or the X server's user.
+# This agent runs unprivileged, so against a root-owned X its fan commands are
+# refused ("Operation not permitted") and the fans stay on auto (the agent logs a
+# one-time warning). Either run the agent as root (a drop-in with [Service]
+# User=root), or keep it unprivileged and let it sudo nvidia-settings:
+#   grant in /etc/sudoers.d/flamejob-fan (mode 440):
+#     flamejob-agent ALL=(root) NOPASSWD: /usr/bin/nvidia-settings
+#   then uncomment:
+#FJ_AGENT_FAN_HELPER=sudo -n
+#
+# IMPORTANT: nvidia-settings needs a running classic *Xorg* server with Coolbits
+# enabled and a DISPLAY this (headless) service can reach. Without the lines below
+# fan control silently no-ops (telemetry still works).
+#   - It will NOT work against a Wayland session (the default on e.g. Ubuntu
+#     22.04+/24.04 with GDM). Use an Xorg login session, or run a dedicated Xorg
+#     for the agent: `nvidia-xconfig --enable-all-gpus --cool-bits=28`.
+#   - XAUTHORITY has no fixed path; find the live server's auth file with:
+#       ps -C Xorg -o args= | grep -o '\-auth[= ][^ ]*'
+#     and set XAUTHORITY to that. Ensure the flamejob-agent user can read it
+#     (shared XAUTHORITY, or `xhost +si:localuser:flamejob-agent`).
 #DISPLAY=:0
-#XAUTHORITY=/var/run/lightdm/root/:0
+#XAUTHORITY=/path/to/Xorg/auth/file   # e.g. from the ps command above
 ENV
     fi
 

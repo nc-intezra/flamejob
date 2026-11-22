@@ -4,6 +4,29 @@ All notable changes to flamejob are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-11-22
+
+Makes the v1.3.0 fan controller usable from an unprivileged agent, and stops it
+failing silently.
+
+### Added
+- **`--fan-helper` / `FJ_AGENT_FAN_HELPER`** — a command prefix (e.g. `sudo -n`)
+  that the agent runs `nvidia-settings` through, so an unprivileged agent can
+  drive fans on a root-owned X server without running the whole agent as root.
+
+### Changed
+- When the driver refuses a fan command (*"Operation not permitted"* — which
+  happens when the agent is neither root nor the X server's user), the agent now
+  **logs a one-time warning** explaining the fix, instead of swallowing the error
+  and leaving the fans on auto with no indication why.
+
+### Docs
+- Administrator guide §7: why fan control needs root or the X-server user, the
+  two ways to grant it (run as root, or `sudo` + `FJ_AGENT_FAN_HELPER`), and a
+  headless dedicated-Xorg recipe (Coolbits + per-GPU **virtual display**, needed
+  because GeForce cards refuse fan control without an active display head).
+- The packaged `agent.env` documents the privilege requirement and the helper.
+
 ## [1.3.0] - 2026-11-21
 
 Replaces the agent's fan curve with a target-temperature closed-loop controller
@@ -325,6 +348,7 @@ fleet, all over one OpenAPI-described API.
   self-contained over the wire, while wordlist attacks assume the file is
   present on the agent.
 
+[1.3.1]: https://github.com/nc-intezra/flamejob/releases/tag/v1.3.1
 [1.3.0]: https://github.com/nc-intezra/flamejob/releases/tag/v1.3.0
 [1.2.0]: https://github.com/nc-intezra/flamejob/releases/tag/v1.2.0
 [1.1.0]: https://github.com/nc-intezra/flamejob/releases/tag/v1.1.0

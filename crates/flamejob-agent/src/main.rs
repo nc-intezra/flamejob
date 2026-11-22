@@ -75,6 +75,12 @@ struct Args {
     /// currently inert (no GeForce memory-temp sensor is wired in yet).
     #[arg(long, env = "FJ_AGENT_FAN_MEM_TARGET")]
     fan_mem_target: Option<i32>,
+    /// Command prefix to run `nvidia-settings` through, e.g. "sudo -n", so an
+    /// unprivileged agent can drive fans on a root-owned X server. Empty (default)
+    /// runs it directly — which only works when the agent runs as root or as the
+    /// X server's own user.
+    #[arg(long, env = "FJ_AGENT_FAN_HELPER")]
+    fan_helper: Option<String>,
 }
 
 #[tokio::main]
@@ -236,7 +242,7 @@ async fn run(args: &Args, cert_pem: String) -> Result<()> {
     }
 
     // Build the fan-control config once (None = controller disabled).
-    let fan_cfg: Option<gpu::FanConfig> = args.fan_control.then_some(gpu::FanConfig {
+    let fan_cfg: Option<gpu::FanConfig> = args.fan_control.then(|| gpu::FanConfig {
         target_temp: args.fan_target,
         min_fan: args.fan_min,
         max_fan: args.fan_max,
@@ -244,6 +250,11 @@ async fn run(args: &Args, cert_pem: String) -> Result<()> {
         deadband: args.fan_deadband,
         down_step: args.fan_down_step,
         mem_target: args.fan_mem_target,
+        helper: args
+            .fan_helper
+            .as_deref()
+            .map(|s| s.split_whitespace().map(String::from).collect())
+            .unwrap_or_default(),
     });
 
     while let Some(msg) = stream.next().await {
@@ -286,6 +297,7 @@ async fn run(args: &Args, cert_pem: String) -> Result<()> {
                 let server = args.server.clone();
                 let cert = cert_pem.clone();
                 let gpus = gpus.clone();
+                let fan_cfg = fan_cfg.clone();
                 tokio::spawn(async move {
                     run_task(
                         runner, server, cert, task, out_tx, data_dir, current, gpus, fan_cfg,
@@ -507,8 +519,10 @@ async fn run_task(
         last = u.state;
     }
     // Load is off; hand the fans back to the driver's automatic control.
-    if fan_cfg.is_some() && !gpus.is_empty() {
-        gpu::reset_fans(&gpus).await;
+    if let Some(cfg) = &fan_cfg {
+        if !gpus.is_empty() {
+            gpu::reset_fans(&gpus, cfg).await;
+        }
     }
 
     // Ship any cracked results hashcat wrote to the outfile.
