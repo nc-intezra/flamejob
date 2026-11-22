@@ -48,3 +48,35 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+  windows-agent:
+    name: windows agent / clippy + test
+    # The agent is the only component shipped for Windows (the NVIDIA GPU
+    # worker). Build, lint and test it on Windows so the Windows-only service
+    # integration and the cross-platform cfg paths stay green — the rest of the
+    # workspace is Linux-only (the control plane runs on Linux).
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          rustup show
+          rustc --version
+          cargo --version
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Clippy (agent)
+        run: cargo clippy -p flamejob-agent --all-targets -- -D warnings
+
+      - name: Test (agent)
+        run: cargo test -p flamejob-agent

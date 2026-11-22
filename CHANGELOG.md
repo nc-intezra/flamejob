@@ -4,6 +4,47 @@ All notable changes to flamejob are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-11-22
+
+Windows GPU worker agent.
+
+### Added
+- **The `fj-agent` worker now runs on Windows (NVIDIA)**, with the same
+  enrollment, WebSocket task protocol, chunked hashcat execution and device
+  telemetry as the Linux agent. One cross-platform binary; no protocol or
+  control-plane changes.
+  - **Native Windows service.** `fj-agent service run` is the Service Control
+    Manager entry point; `fj-agent service install|uninstall|start|stop` manage
+    the `flamejob-agent` service from the command line. The service stops
+    gracefully on SCM stop/shutdown and logs to
+    `%ProgramData%\flamejob-agent\logs\agent.log`.
+  - **MSI installer** (`deploy/windows`, built with the open-source WiX
+    Toolset). Installs the binary to `%ProgramFiles%\flamejob`, lays down an
+    editable `agent.env` template under `%ProgramData%\flamejob-agent` (never
+    overwritten on upgrade/repair), and registers the auto-start service. The
+    service is installed but not started by the MSI (the admin fills in the
+    server URL + claim token first), mirroring the Linux package's
+    enable-but-don't-start behavior. Uninstall leaves the enrolled certificate
+    in place. For unattended / Group Policy / Intune deployment, install
+    silently then bake the config with `fj-agent service write-env --server …
+    --claim-token … --force` and `sc start flamejob-agent`.
+  - **Config via an env file on Windows.** The agent loads
+    `%ProgramData%\flamejob-agent\agent.env` (the same `FJ_AGENT_*` keys as the
+    Linux systemd `EnvironmentFile`) before reading its environment, so the
+    service and a foreground run share one configuration source. Explicit
+    environment variables still win.
+  - Platform-aware defaults: data dir `%ProgramData%\flamejob-agent`, hashcat
+    `hashcat.exe` (on `PATH`).
+  - The release workflow now builds and attaches the Windows MSI alongside the
+    Debian packages.
+
+### Changed
+- GPU telemetry (`nvidia-smi`) is unchanged and works on Windows. The
+  closed-loop **fan controller remains Linux-only** — it drives
+  `nvidia-settings`, which needs an Xorg server with Coolbits and has no Windows
+  equivalent. `--fan-control` on Windows logs a one-time warning and leaves the
+  fans on the driver's automatic control; all other telemetry still flows.
+
 ## [1.3.4] - 2026-11-22
 
 ### Fixed
@@ -19,7 +60,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   throttled/virtual agent. hashcat's estimate is kept only as a fallback, and a
   past timestamp is never stored. Long gaps (pause/resume) re-baseline the rate.
 
-
+## [1.3.3] - 2026-11-22
 
 Job-ETA fixes and direct agent pinning.
 

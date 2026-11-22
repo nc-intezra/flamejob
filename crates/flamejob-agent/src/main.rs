@@ -16,6 +16,10 @@ use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
 mod gpu;
+// Windows-only: run as a native Service Control Manager service (counterpart of
+// the Linux systemd unit). Compiled out entirely on non-Windows targets.
+#[cfg(windows)]
+mod service;
 
 #[derive(Parser, Debug, Clone)]
 #[command(name = "fj-agent", about = "flamejob distributed worker agent")]
@@ -29,16 +33,15 @@ struct Args {
     /// One-time enrollment claim token (required on first run).
     #[arg(long, env = "FJ_AGENT_CLAIM_TOKEN")]
     claim_token: Option<String>,
-    /// Directory for the agent's cert/key and scratch files.
-    #[arg(
-        long,
-        env = "FJ_AGENT_DATA_DIR",
-        default_value = "/var/lib/flamejob-agent"
-    )]
-    data_dir: PathBuf,
-    /// hashcat binary path.
-    #[arg(long, env = "FJ_AGENT_HASHCAT", default_value = "/usr/bin/hashcat")]
-    hashcat: String,
+    /// Directory for the agent's cert/key and scratch files. Defaults to
+    /// `/var/lib/flamejob-agent` on Unix and `%ProgramData%\flamejob-agent` on
+    /// Windows.
+    #[arg(long, env = "FJ_AGENT_DATA_DIR")]
+    data_dir: Option<PathBuf>,
+    /// hashcat binary path. Defaults to `/usr/bin/hashcat` on Unix and
+    /// `hashcat.exe` (resolved on PATH) on Windows.
+    #[arg(long, env = "FJ_AGENT_HASHCAT")]
+    hashcat: Option<String>,
     /// hashcat workload profile (1-4).
     #[arg(long, env = "FJ_AGENT_WORKLOAD", default_value_t = 3)]
     workload: u8,
@@ -89,18 +92,138 @@ struct Args {
     metrics_interval_secs: u64,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    // On Windows a `service <cmd>` subcommand is handled before clap, so the
+    // normal CLI surface is identical on both platforms. `service run` is the
+    // Service Control Manager entry point (it sets up its own file logging and
+    // builds the runtime); install/uninstall/start/stop manage the service.
+    // For a plain foreground run on Windows we also load the env file so the
+    // service and an interactive run share one configuration source.
+    #[cfg(windows)]
+    {
+        let argv: Vec<String> = std::env::args().skip(1).collect();
+        if argv.first().map(String::as_str) == Some("service") {
+            return service::dispatch(&argv[1..]);
+        }
+        service::load_env_file();
+    }
+
+    init_console_logging();
+    let args = Args::parse();
+    build_runtime()?.block_on(run_agent(args))
+}
+
+/// Install the console tracing subscriber (used for a foreground run and for the
+/// `service install|uninstall|start|stop` subcommands). The Windows service
+/// `run` path installs a file-based subscriber instead.
+pub(crate) fn init_console_logging() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_env("FJ_LOG")
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .init();
-    let args = Args::parse();
-    ensure_data_dir(&args.data_dir)?;
+}
 
-    let pki_dir = args.data_dir.join("pki");
+/// Build the multi-threaded tokio runtime the agent runs on. Previously this
+/// was provided by `#[tokio::main]`; it is explicit now so the Windows service
+/// dispatcher (a synchronous SCM callback) can own the runtime and drive the
+/// same async entry point.
+pub(crate) fn build_runtime() -> Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("build tokio runtime")
+}
+
+/// Default data directory when neither `--data-dir` nor `FJ_AGENT_DATA_DIR` is
+/// set: `/var/lib/flamejob-agent` on Unix, `%ProgramData%\flamejob-agent` on
+/// Windows.
+pub(crate) fn default_data_dir() -> PathBuf {
+    #[cfg(windows)]
+    {
+        service::program_data_dir()
+    }
+    #[cfg(not(windows))]
+    {
+        PathBuf::from("/var/lib/flamejob-agent")
+    }
+}
+
+/// Default hashcat binary when neither `--hashcat` nor `FJ_AGENT_HASHCAT` is
+/// set: the full path on Unix, and `hashcat.exe` (resolved on PATH) on Windows,
+/// where there is no canonical install location.
+fn default_hashcat() -> String {
+    #[cfg(windows)]
+    {
+        "hashcat.exe".to_string()
+    }
+    #[cfg(not(windows))]
+    {
+        "/usr/bin/hashcat".to_string()
+    }
+}
+
+/// Render the Windows `agent.env` configuration file. Empty inputs fall back to
+/// the same placeholders a freshly-installed file would carry, so an unattended
+/// install can bake in real values while an interactive install still produces
+/// an editable template. Kept here (not in the Windows-only `service` module) so
+/// it is unit-tested on every platform.
+#[cfg(any(windows, test))]
+pub(crate) fn render_agent_env(
+    server: &str,
+    name: &str,
+    claim_token: &str,
+    hashcat: &str,
+) -> String {
+    let server = if server.is_empty() {
+        "http://CONTROL-PLANE-HOST:8443"
+    } else {
+        server
+    };
+    let name = if name.is_empty() { "agent-1" } else { name };
+    let hashcat = if hashcat.is_empty() {
+        "hashcat.exe"
+    } else {
+        hashcat
+    };
+    let token_line = if claim_token.is_empty() {
+        "#FJ_AGENT_CLAIM_TOKEN=".to_string()
+    } else {
+        format!("FJ_AGENT_CLAIM_TOKEN={claim_token}")
+    };
+    format!(
+        "# flamejob-agent configuration (Windows).\r\n\
+         # Loaded by fj-agent from %ProgramData%\\flamejob-agent\\agent.env at startup.\r\n\
+         # Point at your control plane and set a one-time claim token for the first start.\r\n\
+         FJ_AGENT_SERVER={server}\r\n\
+         FJ_AGENT_NAME={name}\r\n\
+         # Obtain from the control plane: POST /admin/agent-claims (needs ManageAgents).\r\n\
+         # Needed only for the first start; after enrollment the client certificate\r\n\
+         # persists under %ProgramData%\\flamejob-agent\\pki and you can clear this line.\r\n\
+         {token_line}\r\n\
+         # hashcat executable on this worker (full path, or just hashcat.exe if on PATH).\r\n\
+         FJ_AGENT_HASHCAT={hashcat}\r\n\
+         # hashcat workload profile (1-4).\r\n\
+         FJ_AGENT_WORKLOAD=3\r\n\
+         \r\n\
+         # --- GPU fan control -----------------------------------------------------\r\n\
+         # Active fan control is Linux-only (it drives nvidia-settings through an Xorg\r\n\
+         # server with Coolbits, which Windows has no equivalent for). On Windows the\r\n\
+         # agent still reports GPU telemetry via nvidia-smi but leaves fan control to\r\n\
+         # the driver / your vendor utility; FJ_AGENT_FAN_CONTROL is ignored here.\r\n"
+    )
+}
+
+/// The agent's core lifecycle: ensure the data dir, enroll on first run, then
+/// service the task stream. Shared by the foreground entry point and the
+/// Windows service dispatcher.
+pub(crate) async fn run_agent(args: Args) -> Result<()> {
+    let data_dir = args.data_dir.clone().unwrap_or_else(default_data_dir);
+    let hashcat = args.hashcat.clone().unwrap_or_else(default_hashcat);
+    ensure_data_dir(&data_dir)?;
+
+    let pki_dir = data_dir.join("pki");
     let cert_path = pki_dir.join("agent.pem");
     let key_path = pki_dir.join("agent.key.pem");
 
@@ -109,7 +232,7 @@ async fn main() -> Result<()> {
     }
     let cert_pem = std::fs::read_to_string(&cert_path).context("read agent cert")?;
 
-    run(&args, cert_pem).await
+    run(&args, data_dir, hashcat, cert_pem).await
 }
 
 /// Create the agent's data dir and the subdirs it writes into (`pki`, `jobs`,
@@ -122,10 +245,9 @@ fn ensure_data_dir(dir: &Path) -> Result<()> {
         std::fs::create_dir_all(&p).with_context(|| {
             format!(
                 "cannot create {} — the data dir is not writable by this user. \
-                 Set --data-dir (FJ_AGENT_DATA_DIR) to a writable path, or chown it \
-                 to the user running fj-agent, e.g. `sudo chown -R $(id -un) {}`",
+                 Set --data-dir (FJ_AGENT_DATA_DIR) to a writable path, or {}",
                 p.display(),
-                dir.display()
+                data_dir_fix_hint(dir)
             )
         })?;
     }
@@ -134,14 +256,33 @@ fn ensure_data_dir(dir: &Path) -> Result<()> {
     let probe = dir.join(".fj-agent-write-probe");
     std::fs::write(&probe, b"ok").with_context(|| {
         format!(
-            "{} exists but is not writable by this user. chown it to the user \
-             running fj-agent, e.g. `sudo chown -R $(id -un) {}`",
+            "{} exists but is not writable by this user. {}",
             dir.display(),
-            dir.display()
+            data_dir_fix_hint(dir)
         )
     })?;
     let _ = std::fs::remove_file(&probe);
     Ok(())
+}
+
+/// Platform-appropriate remediation hint for a non-writable data dir.
+fn data_dir_fix_hint(dir: &Path) -> String {
+    #[cfg(windows)]
+    {
+        format!(
+            "grant the account running fj-agent Modify permission on it, e.g. \
+             `icacls \"{}\" /grant \"*S-1-5-18:(OI)(CI)M\"` (S-1-5-18 = LocalSystem, \
+             the account the installed service runs as)",
+            dir.display()
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        format!(
+            "chown it to the user running fj-agent, e.g. `sudo chown -R $(id -un) {}`",
+            dir.display()
+        )
+    }
 }
 
 /// Generate a keypair + CSR, POST /agent/enroll, and persist the issued cert.
@@ -186,8 +327,9 @@ async fn enroll(args: &Args, cert_path: &Path, key_path: &Path, pki_dir: &Path) 
     Ok(())
 }
 
-/// Connect the WebSocket task stream and service server messages.
-async fn run(args: &Args, cert_pem: String) -> Result<()> {
+/// Connect the WebSocket task stream and service server messages. `data_dir`
+/// and `hashcat` are the resolved (platform-defaulted) values from [`run_agent`].
+async fn run(args: &Args, data_dir: PathBuf, hashcat: String, cert_pem: String) -> Result<()> {
     let ws_url = {
         let base = args.server.trim_end_matches('/');
         let base = base
@@ -224,9 +366,9 @@ async fn run(args: &Args, cert_pem: String) -> Result<()> {
     // local runner parallelism is 1; the control plane achieves per-job
     // parallelism by fanning chunks across many agents.
     let runner = Arc::new(LocalRunner::new(
-        args.hashcat.clone(),
+        hashcat.clone(),
         args.workload,
-        args.data_dir.clone(),
+        data_dir.clone(),
         1,
     ));
     let current: Arc<Mutex<Option<(Uuid, RunHandle)>>> = Arc::new(Mutex::new(None));
@@ -247,7 +389,11 @@ async fn run(args: &Args, cert_pem: String) -> Result<()> {
         );
     }
 
-    // Build the fan-control config once (None = controller disabled).
+    // Build the fan-control config once (None = controller disabled). Active
+    // fan control drives `nvidia-settings`, an Xorg/Coolbits mechanism with no
+    // Windows equivalent, so on Windows the controller is always disabled (GPU
+    // telemetry via nvidia-smi is unaffected) and `--fan-control` just warns.
+    #[cfg(unix)]
     let fan_cfg: Option<gpu::FanConfig> = args.fan_control.then(|| gpu::FanConfig {
         target_temp: args.fan_target,
         min_fan: args.fan_min,
@@ -262,6 +408,29 @@ async fn run(args: &Args, cert_pem: String) -> Result<()> {
             .map(|s| s.split_whitespace().map(String::from).collect())
             .unwrap_or_default(),
     });
+    #[cfg(not(unix))]
+    let fan_cfg: Option<gpu::FanConfig> = {
+        if args.fan_control {
+            tracing::warn!(
+                "--fan-control is not supported on this platform (fan control needs \
+                 nvidia-settings, which is Xorg/Coolbits-only); fans are left on the \
+                 driver's automatic control. GPU telemetry is unaffected."
+            );
+        }
+        // Reference the tuning fields so they are not flagged unused on a
+        // platform with no actuation path for them.
+        let _ = (
+            args.fan_target,
+            args.fan_min,
+            args.fan_max,
+            args.fan_critical,
+            args.fan_deadband,
+            args.fan_down_step,
+            args.fan_mem_target,
+            args.fan_helper.as_deref(),
+        );
+        None
+    };
 
     // Idle telemetry heartbeat. The in-task loop in run_task only emits metrics
     // while hashcat is running, so once a task completes/pauses/cancels the
@@ -319,7 +488,7 @@ async fn run(args: &Args, cert_pem: String) -> Result<()> {
             ServerMsg::ComputeKeyspace { req_id, task } => {
                 let runner = runner.clone();
                 let out_tx = out_tx.clone();
-                let data_dir = args.data_dir.clone();
+                let data_dir = data_dir.clone();
                 let server = args.server.clone();
                 let cert = cert_pem.clone();
                 tokio::spawn(async move {
@@ -330,7 +499,7 @@ async fn run(args: &Args, cert_pem: String) -> Result<()> {
             ServerMsg::Assign { task } => {
                 let runner = runner.clone();
                 let out_tx = out_tx.clone();
-                let data_dir = args.data_dir.clone();
+                let data_dir = data_dir.clone();
                 let current = current.clone();
                 let server = args.server.clone();
                 let cert = cert_pem.clone();
@@ -678,6 +847,32 @@ fn state_str(s: TaskState) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_env_uses_placeholders_when_empty() {
+        let env = render_agent_env("", "", "", "");
+        assert!(env.contains("FJ_AGENT_SERVER=http://CONTROL-PLANE-HOST:8443"));
+        assert!(env.contains("FJ_AGENT_NAME=agent-1"));
+        assert!(env.contains("FJ_AGENT_HASHCAT=hashcat.exe"));
+        // No claim token supplied -> the line is left commented out.
+        assert!(env.contains("#FJ_AGENT_CLAIM_TOKEN="));
+        assert!(!env.contains("\nFJ_AGENT_CLAIM_TOKEN="));
+    }
+
+    #[test]
+    fn agent_env_bakes_supplied_values() {
+        let env = render_agent_env(
+            "https://cp.example:8443",
+            "gpu-box-7",
+            "tok-abc",
+            r"C:\tools\hashcat.exe",
+        );
+        assert!(env.contains("FJ_AGENT_SERVER=https://cp.example:8443"));
+        assert!(env.contains("FJ_AGENT_NAME=gpu-box-7"));
+        assert!(env.contains(r"FJ_AGENT_HASHCAT=C:\tools\hashcat.exe"));
+        // A supplied token is written as an active (uncommented) line.
+        assert!(env.contains("\r\nFJ_AGENT_CLAIM_TOKEN=tok-abc\r\n"));
+    }
 
     fn gpu_row(name: &str) -> AgentMetric {
         AgentMetric {

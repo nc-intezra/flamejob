@@ -57,3 +57,50 @@ jobs:
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
             || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes
           gh release upload "$TAG" target/debian/*.deb --clobber --repo "$GITHUB_REPOSITORY"
+
+  windows-msi:
+    name: build & attach Windows MSI (agent)
+    runs-on: windows-latest
+    # Run after the .deb job so the GitHub Release already exists (avoids both
+    # jobs racing to create it); this job then just uploads the MSI to it.
+    needs: debs
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+
+      - name: Toolchain
+        run: |
+          rustup show
+          rustc --version
+          cargo --version
+
+      - name: Build the agent (release)
+        run: cargo build --release -p flamejob-agent
+
+      - name: Install WiX Toolset
+        run: dotnet tool install --global wix
+
+      - name: Build the MSI
+        shell: pwsh
+        run: |
+          $tag = "${{ github.event.inputs.tag || github.ref_name }}"
+          $version = $tag -replace '^v',''
+          $out = "flamejob-agent-$version-x64.msi"
+          wix build .\deploy\windows\flamejob-agent.wxs `
+            -d "Version=$version" `
+            -d "AgentExe=$PWD\target\release\fj-agent.exe" `
+            -o $out
+          "MSI=$out" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Attach the MSI to the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.event.inputs.tag || github.ref_name }}"
+          gh release view "$tag" --repo "$env:GITHUB_REPOSITORY" 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create "$tag" --repo "$env:GITHUB_REPOSITORY" --title "$tag" --generate-notes
+          }
+          gh release upload "$tag" "$env:MSI" --clobber --repo "$env:GITHUB_REPOSITORY"

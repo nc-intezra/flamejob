@@ -5,6 +5,13 @@
 //! no NVIDIA driver or binaries present (or on a box with no GPUs) the functions
 //! log nothing noisy and simply return empty / no-op, so the agent runs fine on
 //! CPU-only hosts.
+//!
+//! Platform note: `nvidia-smi` telemetry works identically on Linux and Windows
+//! (the driver ships `nvidia-smi.exe` on `PATH`). Active fan control, however,
+//! is driven through `nvidia-settings`, which is an Xorg/Coolbits mechanism with
+//! no Windows counterpart, so the actuation here is compiled in only on Unix;
+//! on Windows it is a no-op and the fans stay on the driver's automatic control.
+//! The controller decision logic ([`decide_fan`]) is pure and platform-neutral.
 use flamejob_api::agent::AgentMetric;
 use std::collections::HashMap;
 use tokio::process::Command;
@@ -31,6 +38,7 @@ async fn nvidia_smi(args: &[&str]) -> Option<String> {
 
 /// Warn only once if the driver refuses fan control, so a per-tick failure
 /// doesn't flood the log but also isn't swallowed silently.
+#[cfg(unix)]
 static FAN_REFUSED_WARNED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
@@ -41,6 +49,7 @@ static FAN_REFUSED_WARNED: std::sync::atomic::AtomicBool =
 /// quiet so CPU-only/headless hosts aren't noisy.
 /// Build the `(program, args)` to invoke, applying an optional `helper` prefix
 /// (e.g. `["sudo","-n"]` → run `sudo -n nvidia-settings <args>`).
+#[cfg(unix)]
 fn fan_cmd_parts(helper: &[String], args: &[String]) -> (String, Vec<String>) {
     if helper.is_empty() {
         ("nvidia-settings".to_string(), args.to_vec())
@@ -52,6 +61,17 @@ fn fan_cmd_parts(helper: &[String], args: &[String]) -> (String, Vec<String>) {
     }
 }
 
+/// Apply `nvidia-settings` attribute assignments (Unix only).
+///
+/// `nvidia-settings` is an Xorg mechanism; on non-Unix targets (Windows) there
+/// is no equivalent, so this is a no-op and the fans stay on the driver's
+/// automatic control. Callers never reach it on Windows anyway — the agent
+/// disables fan control there — but keeping a stub keeps the fan paths
+/// cross-platform without scattering `cfg` at every call site.
+#[cfg(not(unix))]
+async fn nvidia_settings(_helper: &[String], _args: &[String]) {}
+
+#[cfg(unix)]
 async fn nvidia_settings(helper: &[String], args: &[String]) {
     let (program, full) = fan_cmd_parts(helper, args);
     let mut cmd = Command::new(program);
@@ -99,6 +119,16 @@ pub async fn detect() -> Vec<Gpu> {
 
 /// Best-effort list of the `nvidia-settings` fan handles bound to a GPU, so a
 /// multi-fan card has every fan driven. Falls back to `[index]`.
+///
+/// Fan handles are only meaningful for `nvidia-settings` actuation, which is
+/// Unix-only, so on Windows this just returns `[index]` without spawning
+/// anything.
+#[cfg(not(unix))]
+async fn detect_fans(index: u32) -> Vec<u32> {
+    vec![index]
+}
+
+#[cfg(unix)]
 async fn detect_fans(index: u32) -> Vec<u32> {
     let out = Command::new("nvidia-settings")
         .args(["-q", &format!("[gpu:{index}]/Fans"), "-t"])
@@ -118,6 +148,7 @@ async fn detect_fans(index: u32) -> Vec<u32> {
 
 /// Parse fan handles out of an `nvidia-settings` fan listing. Prefers `fan:N`
 /// tokens; falls back to bare integers.
+#[cfg(unix)]
 fn parse_fan_handles(s: &str) -> Vec<u32> {
     let mut out = Vec::new();
     for part in s.split("fan:").skip(1) {
@@ -455,11 +486,11 @@ pub async fn reset_fans(gpus: &[Gpu], cfg: &FanConfig) {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        critical_for, decide_fan, fan_cmd_parts, parse_fan_handles, parse_sample_line, FanAction,
-        FanPolicy, FanState,
-    };
+    use super::{critical_for, decide_fan, parse_sample_line, FanAction, FanPolicy, FanState};
+    #[cfg(unix)]
+    use super::{fan_cmd_parts, parse_fan_handles};
 
+    #[cfg(unix)]
     #[test]
     fn fan_cmd_applies_helper_prefix() {
         let a = vec!["-a".to_string(), "x".to_string()];
@@ -645,6 +676,7 @@ mod tests {
         assert_eq!(critical_for(0, 75, None), 92); // unknown max -> (target + 20) - 3
     }
 
+    #[cfg(unix)]
     #[test]
     fn parses_fan_handles() {
         assert_eq!(parse_fan_handles("[fan:0], [fan:1]"), vec![0, 1]);

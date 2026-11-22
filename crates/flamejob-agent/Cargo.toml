@@ -44,3 +44,10 @@ tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 sysinfo = { workspace = true }
+
+# Windows: run as a native Service Control Manager service, and log to a file
+# under %ProgramData% (there is no console/journald under the SCM). These are
+# compiled only on Windows and pulled in by the `#[cfg(windows)] mod service`.
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.7"
+tracing-appender = "0.2"
