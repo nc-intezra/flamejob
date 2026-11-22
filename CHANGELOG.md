@@ -4,7 +4,22 @@ All notable changes to flamejob are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.3.3] - 2026-11-22
+## [1.3.4] - 2026-11-22
+
+### Fixed
+- **Job ETA still showed "soon" for real running jobs (follow-up to 1.3.3).**
+  The server estimated completion as *remaining keyspace ÷ reported speed*, which
+  is wildly optimistic for small/fast jobs: a ~23 GH/s agent "finishes" an 81M
+  keyspace in milliseconds even while the run visibly takes minutes, so
+  `est_completion` was always ~now and rendered as "soon". hashcat's own
+  `estimated_stop` is the same ratio and no better here. ETA is now computed from
+  **observed job progress over wall-clock time** — the rate at which the overall
+  percentage actually climbs, smoothed and projected to 100% — so it reflects
+  real throughput regardless of reported speed, keyspace size, chunking, or a
+  throttled/virtual agent. hashcat's estimate is kept only as a fallback, and a
+  past timestamp is never stored. Long gaps (pause/resume) re-baseline the rate.
+
+
 
 Job-ETA fixes and direct agent pinning.
 
