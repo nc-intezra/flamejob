@@ -82,7 +82,7 @@
          an admin's edits (and an unattended forced write-env) are preserved
          across upgrades and repairs. -->
     <Component Id="C_AgentEnv" Directory="DATAFOLDER" Guid="2F6B8E10-9C4D-4A77-B3E2-1A2B3C4D5E6F" NeverOverwrite="yes">
-      <File Id="agent.env" Name="agent.env" Source="agent.env.template" KeyPath="yes" />
+      <File Id="agent.env" Name="agent.env" Source="$(sys.SOURCEFILEDIR)agent.env.template" KeyPath="yes" />
     </Component>
 
     <Feature Id="Main" Title="flamejob agent" Level="1">
