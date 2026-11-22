@@ -33,6 +33,28 @@ FJ_AGENT_NAME=agent-1
 FJ_AGENT_HASHCAT=/usr/bin/hashcat
 # hashcat workload profile (1-4).
 FJ_AGENT_WORKLOAD=3
+
+# --- GPU fan control (NVIDIA, opt-in, off by default) -----------------------
+# Uncomment to run the closed-loop fan controller while a job runs: it disables
+# the driver's auto fan control and holds each GPU's core at FJ_AGENT_FAN_TARGET.
+#FJ_AGENT_FAN_CONTROL=true
+# Optional tuning (defaults shown):
+#FJ_AGENT_FAN_TARGET=75        # core temperature (C) to hold
+#FJ_AGENT_FAN_MIN=30           # minimum fan %
+#FJ_AGENT_FAN_MAX=100          # maximum fan %
+#FJ_AGENT_FAN_DEADBAND=2       # C no-change band around the target
+#FJ_AGENT_FAN_DOWN_STEP=5      # max fan %% decrease per tick
+#FJ_AGENT_FAN_CRITICAL=        # overheat trip (C); default is just below each
+#                              # GPU's rated slowdown temp. At/above it the task
+#                              # is stopped and the agent flagged until it cools.
+#
+# IMPORTANT: nvidia-settings needs a running X server with Coolbits enabled and a
+# DISPLAY this (headless) service can reach. Without the two lines below fan
+# control silently no-ops (telemetry still works). Set DISPLAY/XAUTHORITY to your
+# X server, enable Coolbits (e.g. `nvidia-xconfig --cool-bits=28`), and allow the
+# flamejob-agent user to access X (shared XAUTHORITY or xhost).
+#DISPLAY=:0
+#XAUTHORITY=/var/run/lightdm/root/:0
 ENV
     fi
 
