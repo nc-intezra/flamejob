@@ -79,7 +79,10 @@ jobs:
         run: cargo build --release -p flamejob-agent
 
       - name: Install WiX Toolset
-        run: dotnet tool install --global wix
+        # Pin to WiX v5: v6/v7 gate behind the Open Source Maintenance Fee EULA
+        # (error WIX7015) which can't be accepted non-interactively in CI. v5 has
+        # the same `wix build` CLI and v4 schema this .wxs targets.
+        run: dotnet tool install --global wix --version 5.0.2
 
       - name: Build the MSI
         shell: pwsh
