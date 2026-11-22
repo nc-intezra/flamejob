@@ -4,7 +4,44 @@ All notable changes to flamejob are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.3.2] - 2026-11-22
+## [1.3.3] - 2026-11-22
+
+Job-ETA fixes and direct agent pinning.
+
+### Fixed
+- **Job ETA now shows a real countdown instead of "soon".** Three separate
+  causes are addressed:
+  - The agent dropped hashcat's estimate at the agent→server boundary
+    (`AgentMsg::Progress` had no `eta` field). Progress now carries hashcat's
+    `estimated_stop`, so the server can show an ETA even for an unknown-keyspace
+    chunk it can't estimate from keyspace/speed itself.
+  - `estimated_stop: 0` (hashcat's "no estimate yet") was mapped to the Unix
+    epoch (1970) and rendered as a bogus past time. Non-positive values are now
+    treated as "no estimate".
+  - A finished/paused/cancelled job kept its last ETA, which was now in the past.
+    `est_completion` is cleared whenever a job leaves the running state.
+- ETA is now formatted as **HH:MM:SS** in both the Jobs list and the job detail.
+
+### Added
+- **Pin a job to a specific agent.** Superadmin/Admin can left-click a job name
+  in the Jobs list to open a menu and pin the job to an agent (or set it back to
+  "Auto / any agent"); the scheduler then runs that job's chunks only on the
+  pinned agent (a pinned chunk waits for its agent rather than running elsewhere).
+  - New column `jobs.pinned_agent_id` (migration `0005`, `ON DELETE SET NULL`).
+  - `POST /jobs/{id}/pin` (body `{agent_id}`) and `DELETE /jobs/{id}/pin`, gated
+    to the **ManageAgents** capability.
+  - New config `scheduler.local_agent_name` (defaults to the machine hostname)
+    names local-runner work in the agent display.
+- **"Agent" column** in the Jobs list and an agent line in the job detail, for
+  Superadmin/Admin/Operator — shows the pinned agent, or the agent(s)/local host
+  currently running the job (single-agent and local-host fallbacks included).
+
+### Changed
+- **Admin** role now also holds the **ViewJobs** capability, so admins can see
+  the job queue they pin to agents (an admin still cannot submit jobs). `/agents`
+  now accepts ViewStats **or** ManageAgents so admins can list agents to pin to.
+
+
 
 A dashboard reliability and layout release. It also rolls up two changes that
 merged after v1.3.1 without a version bump of their own: the inline Ember "fj"

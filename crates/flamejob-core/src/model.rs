@@ -40,7 +40,9 @@ impl Role {
                 ManageDirectory,
                 ManageAgents,
             ],
-            Role::Admin => &[ManageUsers, ManageAgents],
+            // Admin manages users and agents; ViewJobs lets an admin see the
+            // job queue they pin to agents (you can't pin what you can't see).
+            Role::Admin => &[ManageUsers, ManageAgents, ViewJobs],
             Role::Operator => &[SubmitJobs, Ingest, ViewPlaintext, ViewStats, ViewJobs],
             Role::Viewer => &[ViewStats, ViewJobs],
         }
@@ -115,6 +117,8 @@ mod tests {
         assert!(Role::Operator.has(Capability::SubmitJobs));
         assert!(!Role::Admin.has(Capability::SubmitJobs));
         assert!(Role::Admin.has(Capability::ManageUsers));
+        assert!(Role::Admin.has(Capability::ViewJobs)); // admins see the queue to pin jobs
+        assert!(!Role::Admin.has(Capability::SubmitJobs)); // but still cannot submit
         assert!(!Role::Viewer.has(Capability::SubmitJobs));
         assert!(Role::Viewer.has(Capability::ViewJobs));
         assert!(Role::Superadmin.has(Capability::ManageDirectory));

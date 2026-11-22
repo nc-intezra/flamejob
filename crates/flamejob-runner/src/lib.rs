@@ -144,8 +144,13 @@ fn parse_status(line: &str, task_id: Uuid) -> Option<StatusUpdate> {
         .collect();
     let speed = device_speeds.iter().map(|d| d.speed).sum();
     let recovered = s.recovered_hashes.map(|r| r[0]).unwrap_or(0);
+    // hashcat emits `estimated_stop: 0` (and other non-positive sentinels) when
+    // it has no estimate yet; mapping that straight through would land on the
+    // Unix epoch (1970) and render as a bogus past ETA. Only accept a positive,
+    // future-looking timestamp.
     let eta = s
         .estimated_stop
+        .filter(|&ts| ts > 0)
         .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0));
     Some(StatusUpdate {
         task_id,
@@ -259,6 +264,7 @@ mod tests {
             keyspace_offset: 0,
             keyspace_len: 0,
             extra_args: vec![],
+            pinned_agent_id: None,
         };
         let paths = RunnerPaths {
             potfile: "/var/lib/flamejob/flamejob.pot".into(),
@@ -282,6 +288,16 @@ mod tests {
         assert_eq!(u.device_speeds.len(), 1);
         assert_eq!(u.device_speeds[0].device_id, 1);
         assert_eq!(u.device_speeds[0].speed, 1000);
+        assert!(u.eta.is_some(), "a positive estimated_stop yields an eta");
+    }
+
+    #[test]
+    fn zero_estimated_stop_yields_no_eta() {
+        // hashcat's "no estimate yet" (0) must not become the 1970 epoch, which
+        // would render as a bogus past ETA ("soon") in the dashboard.
+        let line = r#"{"status":3,"progress":[10,100],"devices":[{"device_id":1,"speed":500}],"estimated_stop":0}"#;
+        let u = parse_status(line, uuid::Uuid::nil()).unwrap();
+        assert!(u.eta.is_none(), "estimated_stop=0 must yield no eta");
     }
 
     #[test]

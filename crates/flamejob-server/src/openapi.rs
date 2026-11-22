@@ -27,7 +27,7 @@ impl Modify for SecurityAddon {
 #[derive(OpenApi)]
 #[openapi(
     modifiers(&SecurityAddon),
-    components(schemas(crate::routes::PatchJob)),
+    components(schemas(crate::routes::PatchJob, crate::routes::PinRequest)),
     tags(
         (name = "auth", description = "Login and identity"),
         (name = "jobs", description = "Job queue and control"),
@@ -52,6 +52,8 @@ impl Modify for SecurityAddon {
         crate::routes::pause_job,
         crate::routes::resume_job,
         crate::routes::cancel_job,
+        crate::routes::pin_job,
+        crate::routes::unpin_job,
         crate::routes::list_hashlists,
         crate::routes::create_hashlist,
         crate::routes::list_cracked,

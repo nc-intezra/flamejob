@@ -64,6 +64,15 @@ pub struct JobView {
     pub speed: i64,
     pub cracked: i32,
     pub total: i32,
+    /// Agent this job is pinned to (runs only there), if any. Set via
+    /// `POST /jobs/{id}/pin`; requires the ManageAgents capability.
+    pub pinned_agent_id: Option<Uuid>,
+    /// Display name of the pinned agent, resolved from `pinned_agent_id`.
+    pub pinned_agent: Option<String>,
+    /// Names of the agent(s) (or the local host) currently running this job's
+    /// chunks — for showing where a job is executing.
+    #[serde(default)]
+    pub running_agents: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -243,7 +252,7 @@ impl Event {
     // so the document served at /openapi.json always matches the release.
     info(
         title = "flamejob",
-        version = "1.3.2",
+        version = "1.3.3",
         description = "Distributed hashcat queue API"
     ),
     components(schemas(
