@@ -65,9 +65,12 @@ jobs:
     # jobs racing to create it); this job then just uploads the MSI to it.
     needs: debs
     steps:
+      # Build from the ref that triggered this run: the pushed tag for a normal
+      # `v*` release, or the dispatched branch for a manual re-run. (Do NOT pin to
+      # the tag input here — that would rebuild an old tag's packaging sources even
+      # when re-running to attach a fixed MSI. The version label still comes from
+      # the tag input below.)
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.tag || github.ref_name }}
 
       - name: Toolchain
         run: |
