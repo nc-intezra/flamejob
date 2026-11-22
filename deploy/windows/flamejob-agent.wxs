@@ -18,13 +18,11 @@
       -d Version=<x.y.z> -d AgentExe=target\release\fj-agent.exe ^
       -o flamejob-agent-<x.y.z>-x64.msi
 
-  Unattended configuration (GPO/Intune/scripted): install silently, then bake
-  the config with the agent itself and start the service, e.g.
-    msiexec /i flamejob-agent-<x.y.z>-x64.msi /qn
-    "%ProgramFiles%\flamejob\fj-agent.exe" service write-env ^
-      --server https://control-plane:8443 --name gpu-box-1 ^
-      --claim-token <token> --force
-    sc start flamejob-agent
+  Unattended configuration (GPO/Intune/scripted): install silently with
+  `msiexec /i flamejob-agent-<x.y.z>-x64.msi /qn`, then bake the config with
+  `fj-agent.exe service write-env` (pass the server URL, agent name, claim token
+  and hashcat path; see docs/guides/windows-agent.md) and start the service with
+  `sc start flamejob-agent`.
 -->
 <?ifndef Version?>
   <?define Version="0.0.0"?>
@@ -81,10 +79,10 @@
     </Component>
 
     <!-- Config/data dir and the editable agent.env template. NeverOverwrite so
-         an admin's edits (and an unattended `write-env --force`) are preserved
+         an admin's edits (and an unattended forced write-env) are preserved
          across upgrades and repairs. -->
     <Component Id="C_AgentEnv" Directory="DATAFOLDER" Guid="2F6B8E10-9C4D-4A77-B3E2-1A2B3C4D5E6F" NeverOverwrite="yes">
-      <File Id="agent.env" Name="agent.env" Source="agent.env.template" KeyPath="yes" />
+      <File Id="agent.env" Name="agent.env" Source="$(sys.SOURCEFILEDIR)agent.env.template" KeyPath="yes" />
     </Component>
 
     <Feature Id="Main" Title="flamejob agent" Level="1">
