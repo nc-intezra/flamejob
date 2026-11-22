@@ -9,6 +9,8 @@ use chrono::Utc;
 use flamejob_api::*;
 use flamejob_core::{Capability, JobState, TaskState};
 use flamejob_db::models::HashlistRow;
+use rand::rngs::OsRng;
+use rand::RngCore;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use tokio_stream::wrappers::BroadcastStream;
@@ -36,6 +38,8 @@ pub fn router(state: AppState) -> Router {
         .route("/openapi.json", get(openapi))
         .route("/auth/login", post(login))
         .route("/auth/me", get(me))
+        .route("/auth/api-keys", get(list_api_keys).post(create_api_key))
+        .route("/auth/api-keys/:id", delete(revoke_api_key))
         .route("/jobs", get(list_jobs).post(create_job))
         .route("/jobs/clear", post(clear_finished_jobs))
         .route("/jobs/:id", get(get_job).patch(patch_job))
@@ -150,6 +154,130 @@ async fn me(auth: AuthUser) -> Json<MeResponse> {
         username: auth.username,
         roles: auth.roles,
     })
+}
+
+// ---- API keys (per-user, revocable) ----
+
+/// Mint a fresh secret: `fj_` + 160 random bits (hex). Returns the full secret,
+/// a non-secret display prefix, and the SHA-256 hash to store.
+fn generate_api_key() -> (String, String, String) {
+    let mut bytes = [0u8; 20];
+    OsRng.fill_bytes(&mut bytes);
+    let secret = format!("fj_{}", hex::encode(bytes));
+    let prefix = secret[..10].to_string(); // "fj_" + first 7 hex chars
+    let hash = auth::api_key_hash(&secret);
+    (secret, prefix, hash)
+}
+
+#[utoipa::path(
+    post, path = "/auth/api-keys", tag = "auth", security(("bearer" = [])),
+    request_body = ApiKeyCreate,
+    responses(
+        (status = 200, description = "Key created — secret shown once", body = ApiKeyCreated),
+        (status = 401, description = "Unauthenticated")
+    )
+)]
+async fn create_api_key(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Json(body): Json<ApiKeyCreate>,
+) -> Result<Json<ApiKeyCreated>, AppError> {
+    let name = body.name.trim();
+    if name.is_empty() {
+        return Err(AppError::BadRequest("key name is required".into()));
+    }
+    // Default to a 1-year lifetime; `0` (or negative) means it never expires.
+    let days = body.expires_in_days.unwrap_or(365);
+    let expires_at = (days > 0).then(|| Utc::now() + chrono::Duration::days(days));
+    let (secret, prefix, hash) = generate_api_key();
+    let id: Uuid = sqlx::query_scalar(
+        "INSERT INTO api_keys (user_id, name, prefix, key_hash, expires_at) \
+         VALUES ($1, $2, $3, $4, $5) RETURNING id",
+    )
+    .bind(auth.id)
+    .bind(name)
+    .bind(&prefix)
+    .bind(&hash)
+    .bind(expires_at)
+    .fetch_one(&state.db)
+    .await?;
+    Ok(Json(ApiKeyCreated {
+        id,
+        name: name.to_string(),
+        prefix,
+        key: secret,
+        expires_at,
+    }))
+}
+
+#[utoipa::path(
+    get, path = "/auth/api-keys", tag = "auth", security(("bearer" = [])),
+    responses(
+        (status = 200, description = "The caller's keys (secrets never returned)", body = [ApiKeyView]),
+        (status = 401, description = "Unauthenticated")
+    )
+)]
+async fn list_api_keys(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> Result<Json<Vec<ApiKeyView>>, AppError> {
+    type Row = (
+        Uuid,
+        String,
+        String,
+        chrono::DateTime<Utc>,
+        Option<chrono::DateTime<Utc>>,
+        Option<chrono::DateTime<Utc>>,
+        bool,
+    );
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT id, name, prefix, created_at, expires_at, last_used_at, revoked \
+         FROM api_keys WHERE user_id = $1 ORDER BY created_at DESC",
+    )
+    .bind(auth.id)
+    .fetch_all(&state.db)
+    .await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(
+                |(id, name, prefix, created_at, expires_at, last_used_at, revoked)| ApiKeyView {
+                    id,
+                    name,
+                    prefix,
+                    created_at,
+                    expires_at,
+                    last_used_at,
+                    revoked,
+                },
+            )
+            .collect(),
+    ))
+}
+
+#[utoipa::path(
+    delete, path = "/auth/api-keys/{id}", tag = "auth", security(("bearer" = [])),
+    params(("id" = Uuid, Path, description = "API key id")),
+    responses(
+        (status = 204, description = "Revoked"),
+        (status = 404, description = "Not found or already revoked")
+    )
+)]
+async fn revoke_api_key(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, AppError> {
+    let res = sqlx::query(
+        "UPDATE api_keys SET revoked = true WHERE id = $1 AND user_id = $2 AND NOT revoked",
+    )
+    .bind(id)
+    .bind(auth.id)
+    .execute(&state.db)
+    .await?;
+    if res.rows_affected() == 0 {
+        return Err(AppError::NotFound("api key not found".into()));
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn load_roles(state: &AppState, user_id: Uuid) -> Result<Vec<flamejob_core::Role>, AppError> {

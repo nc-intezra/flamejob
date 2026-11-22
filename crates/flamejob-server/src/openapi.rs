@@ -40,6 +40,9 @@ impl Modify for SecurityAddon {
     paths(
         crate::routes::login,
         crate::routes::me,
+        crate::routes::create_api_key,
+        crate::routes::list_api_keys,
+        crate::routes::revoke_api_key,
         crate::routes::list_jobs,
         crate::routes::create_job,
         crate::routes::clear_finished_jobs,
@@ -77,5 +80,8 @@ pub fn document() -> utoipa::openapi::OpenApi {
         dst.schemas.extend(src.schemas);
         dst.security_schemes.extend(src.security_schemes);
     }
+    // Stamp the live crate version so the served API version always matches the
+    // release instead of drifting from a hand-maintained literal.
+    base.info.version = env!("CARGO_PKG_VERSION").to_string();
     base
 }

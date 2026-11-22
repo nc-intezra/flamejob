@@ -4,6 +4,36 @@ All notable changes to flamejob are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-11-21
+
+Adds revocable API keys for programmatic access, fixes per-GPU hashrate
+attribution, ties the API's reported version to the release, and refines the
+submit panel.
+
+### Added
+- **API keys.** Signed-in users can mint long-lived, revocable API keys from the
+  web dashboard (click your username). Keys authenticate any request as
+  `Authorization: Bearer fj_…` with the user's current roles, default to a
+  1-year lifetime (selectable, including no-expiry), and are stored only as a
+  SHA-256 hash — the secret is shown once at creation. New endpoints:
+  `POST /auth/api-keys`, `GET /auth/api-keys`, `DELETE /auth/api-keys/{id}`
+  (each scoped to the calling user). Revocation and expiry take effect
+  immediately, and keys survive a JWT-secret rotation.
+
+### Changed
+- **Per-card hashrate.** hashcat's per-device speeds are now attributed to each
+  GPU's device row instead of being summed onto the agent's CPU row. GPU rows
+  show their own hashrate; the CPU row shows a hashrate only on CPU-only agents.
+- **Submit panel.** "Submit to agents" is now a tall square button on the right
+  of the panel, with the fields reflowed into the freed space to cut scrolling.
+- **API version.** The OpenAPI document served at `/openapi.json` now reports the
+  live crate version (so it tracks the release automatically) instead of a
+  hand-maintained `1.0.0` literal that had drifted.
+
+### Fixed
+- Per-GPU hashrate previously showed `—` on every GPU row while the combined rate
+  appeared on the remote agent's CPU row.
+
 ## [1.1.0] - 2026-11-21
 
 Brings NVIDIA GPU telemetry and optional fan control to the agents, and reworks
@@ -270,6 +300,7 @@ fleet, all over one OpenAPI-described API.
   self-contained over the wire, while wordlist attacks assume the file is
   present on the agent.
 
+[1.2.0]: https://github.com/nc-intezra/flamejob/releases/tag/v1.2.0
 [1.1.0]: https://github.com/nc-intezra/flamejob/releases/tag/v1.1.0
 [1.0.6]: https://github.com/nc-intezra/flamejob/releases/tag/v1.0.6
 [1.0.5]: https://github.com/nc-intezra/flamejob/releases/tag/v1.0.5

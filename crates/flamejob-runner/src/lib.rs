@@ -7,7 +7,9 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use flamejob_core::{Result, RunHandle, Runner, RunnerTask, StatusSink, StatusUpdate, TaskState};
+use flamejob_core::{
+    DeviceSpeed, Result, RunHandle, Runner, RunnerTask, StatusSink, StatusUpdate, TaskState,
+};
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
@@ -111,6 +113,8 @@ struct HcStatus {
 #[derive(Debug, Deserialize)]
 struct HcDevice {
     #[serde(default)]
+    device_id: i64,
+    #[serde(default)]
     speed: i64,
 }
 
@@ -129,10 +133,16 @@ fn parse_status(line: &str, task_id: Uuid) -> Option<StatusUpdate> {
         .filter(|p| p[1] > 0)
         .map(|p| p[0] as f64 / p[1] as f64)
         .unwrap_or(0.0);
-    let speed = s
+    let device_speeds: Vec<DeviceSpeed> = s
         .devices
-        .map(|d| d.iter().map(|x| x.speed).sum())
-        .unwrap_or(0);
+        .unwrap_or_default()
+        .into_iter()
+        .map(|d| DeviceSpeed {
+            device_id: d.device_id,
+            speed: d.speed,
+        })
+        .collect();
+    let speed = device_speeds.iter().map(|d| d.speed).sum();
     let recovered = s.recovered_hashes.map(|r| r[0]).unwrap_or(0);
     let eta = s
         .estimated_stop
@@ -144,6 +154,7 @@ fn parse_status(line: &str, task_id: Uuid) -> Option<StatusUpdate> {
         recovered,
         eta,
         state: status_to_task_state(s.status),
+        device_speeds,
     })
 }
 
@@ -268,5 +279,20 @@ mod tests {
         assert_eq!(u.speed, 1000);
         assert_eq!(u.recovered, 2);
         assert_eq!(u.state, TaskState::Running);
+        assert_eq!(u.device_speeds.len(), 1);
+        assert_eq!(u.device_speeds[0].device_id, 1);
+        assert_eq!(u.device_speeds[0].speed, 1000);
+    }
+
+    #[test]
+    fn keeps_per_device_speeds_and_sums_total() {
+        // Two GPUs: the aggregate speed is the sum, and each device is retained
+        // so the agent can attribute a hashrate to each card.
+        let line = r#"{"status":3,"progress":[25,100],"devices":[{"device_id":1,"speed":1200},{"device_id":2,"speed":800}]}"#;
+        let u = parse_status(line, uuid::Uuid::nil()).unwrap();
+        assert_eq!(u.speed, 2000);
+        assert_eq!(u.device_speeds.len(), 2);
+        assert_eq!(u.device_speeds[1].device_id, 2);
+        assert_eq!(u.device_speeds[1].speed, 800);
     }
 }

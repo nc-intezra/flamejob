@@ -21,6 +21,14 @@ pub struct RunnerTask {
     pub extra_args: Vec<String>,
 }
 
+/// Per-compute-device speed, as reported in hashcat's `--status-json` `devices`
+/// array. `device_id` is hashcat's 1-based device index.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceSpeed {
+    pub device_id: i64,
+    pub speed: i64,
+}
+
 /// A status sample derived from hashcat's `--status-json` output.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusUpdate {
@@ -30,6 +38,11 @@ pub struct StatusUpdate {
     pub recovered: i64,
     pub eta: Option<chrono::DateTime<chrono::Utc>>,
     pub state: TaskState,
+    /// Per-device speeds (empty when hashcat reported none, or on the remote
+    /// control-plane path where only the aggregate `speed` is known). Used by
+    /// the agent to attribute each GPU's hashrate to its own device metric.
+    #[serde(default)]
+    pub device_speeds: Vec<DeviceSpeed>,
 }
 
 pub type StatusSink = mpsc::Sender<StatusUpdate>;
