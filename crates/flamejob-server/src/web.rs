@@ -92,6 +92,7 @@ fn render_dashboard(cfg: &Config) -> String {
         "apiBase": api_base,
         "apiPort": api_port,
         "theme": cfg.web.theme,
+        "version": env!("CARGO_PKG_VERSION"),
     });
     DASHBOARD_HTML.replace("\"__FJCFG__\"", &blob.to_string())
 }

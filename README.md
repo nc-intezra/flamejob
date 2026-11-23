@@ -9,10 +9,23 @@ project workspace.
 
 ## Status
 
-**1.0.0** — first stable release. Phase 1 single-box core (scheduler, keyspace
-chunking, ingest/SSE, RBAC), Phase 2 TUI dashboard + GPU/host telemetry, and
-Phase 3 distributed agents (enrollment, WebSocket task protocol, remote runner)
-are all in place. See [CHANGELOG.md](CHANGELOG.md).
+**1.5.0** — current release. The Phase 1 single-box core (scheduler, keyspace
+chunking, ingest/SSE, RBAC), Phase 2 TUI/web dashboards + GPU/host telemetry,
+and Phase 3 distributed agents (enrollment, WebSocket task protocol, remote
+runner) are all in place, plus the work layered on since 1.0.0:
+
+- **API-key authentication** (`fj_…` bearer tokens, same roles as the user) for
+  CLI and scripting, managed from the web UI.
+- **GPU fan control** on Linux agents and per-device hashrate in telemetry.
+- **Observed-rate job ETAs** (progress-rate EMA rather than raw keyspace/speed).
+- **Direct job→agent pinning** — run a job's chunks on a chosen worker.
+- **Windows GPU worker agent** (NVIDIA; MSI + native Windows service), same
+  binary and version as the Linux agent.
+- **Web dashboard**: live queue, a completed-jobs history tab that keeps cracked
+  results reachable after a job is cleared, device grouping by host, job submit,
+  agent enrollment, and user/key administration.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
 ## Workspace
 
@@ -89,12 +102,17 @@ the local hashcat runner, so chunking and ETA logic are unchanged.
 > fingerprint) and transport TLS is expected to be terminated by the deployment
 > (a rustls acceptor or reverse proxy). `GET /agents` lists enrolled workers.
 
-## Roles (Phase 1 RBAC)
+## Roles (RBAC)
 
 - **superadmin** (local break-glass): everything, incl. modify any job
-- **admin**: manage users and roles; cannot run jobs
+- **admin**: manage users, roles and agents; view jobs; cannot run jobs
 - **operator**: run/view jobs, ingest, view decrypted plaintext and stats
 - **viewer**: view jobs in progress and metrics
+
+Capabilities (`ManageUsers`, `SubmitJobs`, `Ingest`, `ViewPlaintext`,
+`ViewStats`, `ViewJobs`, `ManageDirectory`, `ManageAgents`) are resolved live
+from a user's roles on every request; handlers gate on the capability, not the
+role name.
 
 ## Build
 
