@@ -16,6 +16,15 @@ pub struct Config {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerCfg {
     pub bind: String,
+    /// PEM cert + key for the API listener. When both are set the API is served
+    /// over HTTPS (rustls); otherwise it is served over plain HTTP and transport
+    /// TLS is expected to be terminated by a reverse proxy (e.g. Caddy). Use this
+    /// to serve a pre-created certificate from an enterprise CA directly, with no
+    /// proxy. Both must be set together.
+    #[serde(default)]
+    pub tls_cert: Option<String>,
+    #[serde(default)]
+    pub tls_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,6 +151,8 @@ impl Default for Config {
         Self {
             server: ServerCfg {
                 bind: "0.0.0.0:8443".into(),
+                tls_cert: None,
+                tls_key: None,
             },
             database: DatabaseCfg {
                 mode: "local".into(),

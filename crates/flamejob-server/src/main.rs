@@ -16,7 +16,7 @@ mod web;
 
 use std::net::SocketAddr;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tracing_subscriber::{prelude::*, EnvFilter};
 
 fn init_tracing() {
@@ -46,8 +46,32 @@ async fn main() -> Result<()> {
 
     let app = routes::router(state);
     let addr: SocketAddr = cfg.server.bind.parse()?;
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!(%addr, "flamejobd listening");
-    axum::serve(listener, app).await?;
+    // Serve the API over HTTPS when a cert+key are configured ([server].tls_cert
+    // / tls_key), e.g. a pre-created certificate from an enterprise CA. Otherwise
+    // serve plain HTTP and let the deployment terminate TLS (a reverse proxy such
+    // as Caddy, which can also automate Let's Encrypt). Agent identity is verified
+    // at the application layer (cert fingerprint in the WS Hello), so a
+    // terminating proxy does not interfere with it.
+    match (
+        cfg.server.tls_cert.as_deref(),
+        cfg.server.tls_key.as_deref(),
+    ) {
+        (Some(cert), Some(key)) => {
+            let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key)
+                .await
+                .with_context(|| format!("loading [server] TLS cert={cert} key={key}"))?;
+            tracing::info!(%addr, "flamejobd listening (https)");
+            axum_server::bind_rustls(addr, tls)
+                .serve(app.into_make_service())
+                .await?;
+        }
+        (None, None) => {
+            tracing::info!(%addr, "flamejobd listening (http)");
+            axum_server::bind(addr)
+                .serve(app.into_make_service())
+                .await?;
+        }
+        _ => anyhow::bail!("[server] tls_cert and tls_key must be set together"),
+    }
     Ok(())
 }

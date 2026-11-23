@@ -1,5 +1,10 @@
 [server]
 bind = "0.0.0.0:8443"
+# Serve the API directly over HTTPS with a pre-created certificate (e.g. from an
+# enterprise CA). Set BOTH or neither. When unset, the API is plain HTTP and TLS
+# is expected to be terminated by a reverse proxy (see docs/guides/tls.md).
+# tls_cert = "/etc/flamejob/api.crt"
+# tls_key  = "/etc/flamejob/api.key"
 
 [database]
 # 'local'  = installer manages a Postgres on this box

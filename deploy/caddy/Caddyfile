@@ -1,0 +1,30 @@
+# flamejob — Caddy reverse proxy with TLS termination.
+#
+# Caddy fronts the flamejob API (and optionally the web dashboard) and handles
+# transport TLS so flamejobd can stay on plain HTTP behind it. Agent identity is
+# verified at the application layer (cert fingerprint in the WS Hello), so
+# terminating TLS here does not interfere with agent authentication, and
+# reverse_proxy transparently upgrades the /agent/stream WebSocket.
+#
+# Pick ONE tls strategy per site block (see docs/guides/tls.md):
+#   1. Automatic Let's Encrypt — the default. Delete the `tls` lines entirely;
+#      Caddy obtains and renews a public certificate on its own. Requires a
+#      public DNS name pointing here and reachable ports 80/443.
+#   2. Enterprise / pre-created cert — `tls /path/cert.pem /path/key.pem`.
+#   3. Internal/enterprise ACME (e.g. smallstep) — `tls { issuer acme { ca <url> } }`.
+#   4. Caddy's own local CA for a private network — `tls internal`.
+
+# --- API (and WebSocket agent stream) ---
+flamejob.example.com {
+	# (1) automatic Let's Encrypt: leave as-is with no `tls` line.
+	# (2) enterprise cert:
+	#   tls /etc/flamejob/tls/api.crt /etc/flamejob/tls/api.key
+	# (3) internal ACME:
+	#   tls { issuer acme { ca https://ca.internal/acme/acme/directory } }
+	reverse_proxy flamejobd:8443
+}
+
+# --- Web dashboard (optional; omit if you serve it from the same origin) ---
+# dash.flamejob.example.com {
+# 	reverse_proxy flamejobd:9443
+# }

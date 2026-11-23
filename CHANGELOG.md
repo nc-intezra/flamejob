@@ -4,6 +4,31 @@ All notable changes to flamejob are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-11-23
+
+TLS: native HTTPS for the API and a Caddy option for automatic certificates.
+
+### Added
+- **Native HTTPS on the API listener.** `[server].tls_cert` / `[server].tls_key`
+  (PEM) make `flamejobd` serve the API over rustls directly — intended for a
+  pre-created certificate from an enterprise CA, with no proxy in the path. Both
+  must be set together; with neither, the API stays on plain HTTP. Mirrors the
+  dashboard's existing `[web]` TLS option.
+- **Caddy reverse-proxy deployment.** `deploy/caddy/Caddyfile` +
+  `deploy/docker-compose.caddy.yml` front `flamejobd` with
+  [Caddy](https://caddyserver.com): automatic Let's Encrypt (ACME) by default,
+  or a `tls <cert> <key>` enterprise certificate / internal ACME issuer. The
+  `/agent/stream` WebSocket proxies through transparently.
+- **TLS guide** at `docs/guides/tls.md` covering all three paths.
+
+### Notes
+- Agent authentication is unchanged and independent of transport TLS: an agent
+  presents its CA-signed certificate in the WebSocket `Hello` frame and is
+  matched by fingerprint, so terminating TLS at a proxy does not affect it.
+- `flamejobd` deliberately does not embed an ACME client; certificate automation
+  is delegated to Caddy so an expiry/challenge failure is isolated from the
+  control plane.
+
 ## [1.5.0] - 2026-11-22
 
 Dashboard: completed-jobs history, device grouping, and header cleanup.
