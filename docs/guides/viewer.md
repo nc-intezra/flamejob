@@ -4,7 +4,7 @@
 
 This guide is for **viewers** — people who need to watch flamejob without changing anything. As a viewer you can see the job queue and each job's progress, follow live updates, and read device and host metrics. You cannot submit or control jobs, upload or import data, or read cracked plaintext — those need the operator role (see the **Operator Guide**), and running the system is covered in the **Administrator Guide**.
 
-You'll use the `fj` command-line client and the `flamejob-tui` dashboard in read-only fashion, against a `flamejobd` an admin has deployed. This guide documents flamejob **1.3.1**.
+You'll use the `fj` command-line client and the `flamejob-tui` dashboard in read-only fashion, against a `flamejobd` an admin has deployed. This guide documents flamejob **1.6.0**.
 
 ## 2. Concepts primer
 
@@ -74,6 +74,8 @@ It prints job and task updates until you stop it with Ctrl-C. Note that `fj hash
 *Requires the `ViewStats` capability, which the viewer role has.*
 
 Device and host health is shown in the TUI's devices panel. The same data is available from the API if you query it directly: `GET /devices` (the current snapshot) and `GET /devices/{name}/history` (recent samples). They report temperature, utilisation, memory, power, clocks and hashrate for the control plane and any connected agents.
+
+If your admin has given you the browser dashboard's URL, it offers the same read-only view, and its Devices panel can group devices by host — click the **Devices** heading to switch between one tab per host (handy when a box has several GPUs) and a flat list. Its Jobs panel also has a **Completed** tab listing finished jobs with their cracked/total counts; the recovered plaintext itself still needs the operator role, so as a viewer you see the counts but not the passwords.
 
 ## 7. Read-only CLI reference
 

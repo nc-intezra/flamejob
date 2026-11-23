@@ -6,7 +6,7 @@ flamejob is a distributed hashcat job queue. A single control-plane service, `fl
 
 This guide is for the people who stand that system up and keep it running: the **superadmin** (the local break-glass account) and **admin** roles, plus anyone responsible for deployment, configuration, user and agent management, and monitoring. Running and watching jobs day to day is covered separately in the **Operator Guide** and the **Viewer Guide**.
 
-It documents flamejob **1.3.1**, which makes GPU fan control usable from an unprivileged agent: an `FJ_AGENT_FAN_HELPER` knob to run `nvidia-settings` via `sudo`, a one-time log warning when the driver refuses a fan command (instead of failing silently), and the full headless Coolbits/dedicated-Xorg setup documented (§7). It builds on 1.3.0's target-temperature **closed-loop fan controller** and overheat fail-safe, 1.2.x (revocable **API keys** (§14), per-GPU hashrate), 1.1.x (NVIDIA GPU telemetry, a reworked dashboard — hash-mode autodetection, clearer errors, an OLED-black theme), and 1.0.x (many jobs across many agents in parallel, browser job submission, a cracked-password view (§13), live agent status). Directory-mapped (LDAP/AD) RBAC remains on the roadmap and is flagged as planned where it comes up.
+It documents flamejob **1.6.0**, which rounds out **transport TLS** (§7): a superadmin/admin can enable HTTPS on tcp/443 straight from the dashboard's **Sitewide settings** panel (certificate and key stored, key encrypted at rest), the API listener can serve HTTPS natively from a pre-created certificate (`[server].tls_cert`/`tls_key`), and a ready-made Caddy reverse-proxy option covers automatic Let's Encrypt. It builds on **1.5.0** (a dashboard **Completed-jobs** tab that keeps cracked results reachable after the queue is cleared, Devices-by-host grouping, and header polish — §13), **1.4.0** (a **Windows** NVIDIA worker agent — same binary and protocol as Linux, via an MSI and a native service), and 1.3.x (unprivileged **GPU fan control** with the `FJ_AGENT_FAN_HELPER` knob and a closed-loop target-temperature controller), 1.2.x (revocable **API keys** (§14), per-GPU hashrate), 1.1.x (NVIDIA GPU telemetry, a reworked dashboard — hash-mode autodetection, an OLED-black theme), and 1.0.x (many jobs across many agents in parallel, browser job submission, a cracked-password view (§13), live agent status). Directory-mapped (LDAP/AD) RBAC remains on the roadmap and is flagged as planned where it comes up.
 
 ## 2. Concepts primer
 
@@ -51,11 +51,11 @@ There are four ways to run flamejob; the `.deb` packages are the recommended pat
 
 ```
 # control-plane host
-sudo apt install ./flamejob-server_1.3.1-1_amd64.deb \
-                 ./flamejob-cli_1.3.1-1_amd64.deb \
-                 ./flamejob-tui_1.3.1-1_amd64.deb
+sudo apt install ./flamejob-server_1.6.0-1_amd64.deb \
+                 ./flamejob-cli_1.6.0-1_amd64.deb \
+                 ./flamejob-tui_1.6.0-1_amd64.deb
 # a GPU worker
-sudo apt install ./flamejob-agent_1.3.1-1_amd64.deb
+sudo apt install ./flamejob-agent_1.6.0-1_amd64.deb
 ```
 
 Installing `flamejob-server` sets up a complete server: it creates the `flamejob` system user, generates `jwt.key` and `plain.key`, writes a default **local-mode** `/etc/flamejob/flamejob.toml` (only if one isn't already present, so upgrades keep your edits), installs the systemd unit, and **enables** the service. It does not *start* it — the database must be reachable first (see First boot). Edit the config for an external database or the remote runner before starting. `apt purge flamejob-server` removes the generated config and keys.
@@ -91,6 +91,7 @@ flamejob reads configuration from three layers, in increasing precedence: built-
 | Section | Key | Default | Purpose |
 | --- | --- | --- | --- |
 | `[server]` | `bind` | `0.0.0.0:8443` | Listen address. |
+| `[server]` | `tls_cert` / `tls_key` | *(none)* | PEM cert + key for the API; both set ⇒ API served over HTTPS, else plain HTTP (§7). |
 | `[database]` | `mode` | `local` | `local` = installer manages Postgres here; `external` = use `dsn`. |
 | `[database]` | `dsn` | `postgres://flamejob@localhost/flamejob` | Postgres connection string. |
 | `[database]` | `max_connections` | `10` | Connection-pool size. |
@@ -110,7 +111,8 @@ flamejob reads configuration from three layers, in increasing precedence: built-
 | `[telemetry]` | `history_limit` | `500` | Max rows returned by the device-history endpoint. |
 | `[web]` | `enabled` | `true` | Serve the browser dashboard (§13). |
 | `[web]` | `bind` | `0.0.0.0:9443` | Dashboard listen address. |
-| `[web]` | `tls_cert` / `tls_key` | *(none)* | PEM cert + key; both set ⇒ HTTPS, else plain HTTP. |
+| `[web]` | `tls_cert` / `tls_key` | *(none)* | PEM cert + key for the dashboard's `bind` port; both set ⇒ HTTPS, else plain HTTP. |
+| `[web]` | `https_bind` | `0.0.0.0:443` | Address for the optional HTTPS listener a superadmin/admin enables at runtime from **Sitewide settings** (cert/key stored in the DB). Additive — `bind` stays as configured. Binding 443 needs `CAP_NET_BIND_SERVICE` (§7, §13). |
 | `[web]` | `api_base` | *(none)* | API URL the browser calls; unset ⇒ derived from the page host and API port. |
 | `[web]` | `theme` | `dark` | Default dashboard theme (`dark` / `light`). |
 | `[web]` | `allowed_origins` | *(any)* | CORS origins allowed to call the API; empty = any. |
@@ -125,6 +127,7 @@ flamejob authorizes by **capability**, not by role directly: each API route requ
 | --- | :---: | :---: | :---: | :---: |
 | `ManageUsers` | ✓ | ✓ | | |
 | `ManageAgents` | ✓ | ✓ | | |
+| `ManageSettings` | ✓ | ✓ | | |
 | `ManageDirectory` | ✓ | | | |
 | `SubmitJobs` | ✓ | | ✓ | |
 | `Ingest` | ✓ | | ✓ | |
@@ -132,13 +135,13 @@ flamejob authorizes by **capability**, not by role directly: each API route requ
 | `ViewStats` | ✓ | | ✓ | ✓ |
 | `ViewJobs` | ✓ | | ✓ | ✓ |
 
-In practice: **admins manage people and agents but cannot run jobs or read cracked plaintext**; **operators run and inspect jobs but cannot manage users or the fleet**; **viewers are read-only**; the **superadmin** holds everything.
+In practice: **admins manage people, agents and sitewide settings (including TLS, via `ManageSettings`) but cannot run jobs or read cracked plaintext**; **operators run and inspect jobs but cannot manage users or the fleet**; **viewers are read-only**; the **superadmin** holds everything. `ManageSettings` gates the dashboard's **Sitewide settings** panel and the `GET`/`PUT /admin/site-settings` routes (§13).
 
 **How auth works.** A client logs in at `POST /auth/login` with a username and password, verified against an Argon2 hash. On success the server issues a JWT (HS256) signed with `[auth].jwt_secret`, carrying the user's id, username and roles and valid for `[auth].token_ttl_hours`. Clients send it as a `Bearer` token; `GET /auth/me` echoes the current identity and roles.
 
 **Creating users.** `POST /admin/users` (requires `ManageUsers`) takes a username, a password and a list of roles and creates a local account. The `fj` CLI handles login and identity (`fj login`, `fj whoami`) but does not wrap user creation — call the endpoint directly (for example with `curl` and an admin token) or from your own tooling.
 
-**The break-glass superadmin.** The `superadmin` seeded on first boot (§4) is a local account for bootstrapping and emergencies. Once it exists, log in as it and create named admin and operator accounts rather than sharing it. Version 1.3.1 ships account *creation* but not a password-change or disable endpoint, so rotating the superadmin password — or disabling any account — is a database operation today (the `users` table carries a `disabled` flag that login honours). Treat that as the current rotation path until later releases add self-service.
+**The break-glass superadmin.** The `superadmin` seeded on first boot (§4) is a local account for bootstrapping and emergencies. Once it exists, log in as it and create named admin and operator accounts rather than sharing it. flamejob ships account *creation* but not a password-change or disable endpoint, so rotating the superadmin password — or disabling any account — is a database operation today (the `users` table carries a `disabled` flag that login honours). Treat that as the current rotation path until later releases add self-service.
 
 **Directory integration (roadmap).** The `ManageDirectory` capability and the installer's directory prompt are placeholders for planned LDAP/AD-mapped RBAC (Phase 5). Until then, all roles come from the local `user_roles` table.
 
@@ -175,7 +178,14 @@ Log verbosity is set with `FJ_LOG`. Note the agent's default `--server` port (`8
 
 **Monitoring the fleet.** `GET /agents` (requires `ViewStats`) lists enrolled workers with status and timestamps. Status moves through `enrolled` (certificate issued, never connected), `online` (connected now), `offline` (disconnected), and `revoked` (certificate refused at connect).
 
-**Transport security.** The issued certificates are intended for mutual TLS, but in 1.3.1 the agent WebSocket (`/agent/stream`) and the agent file-download endpoint (`/agent/files/{id}`) both authenticate at the *application* layer — by certificate fingerprint — and do not themselves terminate transport TLS. For anything beyond a trusted network, terminate TLS in front of `flamejobd` with a rustls acceptor or a reverse proxy.
+**Transport security.** Agent identity does **not** depend on transport TLS: the agent WebSocket (`/agent/stream`) and the agent file-download endpoint (`/agent/files/{id}`) authenticate at the *application* layer — the agent presents its issued certificate and the server matches it by fingerprint — so terminating TLS anywhere in front is always safe. For anything beyond a trusted network, give the control plane transport TLS by any of four routes (full walkthrough in `docs/guides/tls.md`):
+
+- **Native API TLS** — set `[server].tls_cert` and `[server].tls_key` (both, or neither) to serve the API over HTTPS directly from a pre-created certificate (e.g. from your enterprise CA), no proxy.
+- **Native dashboard TLS** — `[web].tls_cert`/`tls_key` do the same for the dashboard's `bind` port.
+- **Sitewide settings (runtime)** — a superadmin/admin pastes a cert + key in the dashboard and toggles HTTPS on `[web].https_bind` (default :443) live, without a restart; the private key is stored encrypted at rest (§13).
+- **Caddy reverse proxy** — `deploy/caddy/` fronts `flamejobd` with automatic Let's Encrypt (or a `tls <cert> <key>` enterprise cert); `reverse_proxy` upgrades the agent WebSocket transparently.
+
+`flamejobd` deliberately embeds no ACME client — automatic certificate renewal is delegated to Caddy, so an expiry or challenge failure can't take down the control plane.
 
 **File distribution.** As of 1.0.3 the control plane distributes wordlist and rule files to agents automatically. When a chunk task references a wordlist or rule (by file id), the agent fetches it from the control plane over `GET /agent/files/{id}` — authenticated with the same client certificate it uses on the WebSocket — and caches it under `{data_dir}/cache/{id}`, re-using the cached copy on later tasks. Mask attacks carry the mask string inline and need no download. So a wordlist attack in remote mode no longer requires pre-staging files on each agent; the first agent to run a chunk pulls the file on demand.
 
@@ -286,7 +296,7 @@ When agents are connected (§7) they push their own device telemetry up the WebS
 
 ### Command-line reference (all tools)
 
-flamejob ships four executables. `flamejobd`, `flamejob-tui` and `fj-agent` take no subcommands and are driven by flags and environment variables; `fj` is the subcommand-based client. Every documented flag and variable below is exhaustive for 1.3.1 — if a capability isn't listed here, it isn't exposed on the CLI yet.
+flamejob ships four executables. `flamejobd`, `flamejob-tui` and `fj-agent` take no subcommands and are driven by flags and environment variables; `fj` is the subcommand-based client. Every documented flag and variable below is exhaustive for 1.6.0 — if a capability isn't listed here, it isn't exposed on the CLI yet.
 
 #### `flamejobd` — control-plane server
 
@@ -332,7 +342,7 @@ Takes **no arguments or subcommands**. All behaviour comes from configuration (b
 - `--mask <str>` — a hashcat mask (e.g. `?a?a?a?a`) for a mask / brute-force attack; pair with `-a 3`. Masks travel inline to agents, so they need no file distribution.
 - `--rule <id|path>` — a rule file for a dictionary attack (`-a 0`): an uploaded file id (UUID) or a local path, uploaded for you as kind `rule`. Repeatable — pass `--rule` several times to apply rule files in order. Rules are distributed to remote agents like wordlists (§7, *File distribution*).
 - `--priority <int>` — queue order, lower first; default `100`.
-- *Not exposed as a flag in 1.3.1:* raw extra hashcat arguments exist in the API's job config but have no `fj` flag yet; submit those via the API directly if needed.
+- *Not exposed as a `fj` flag:* raw extra hashcat arguments exist in the API's job config but have no `fj` flag yet; submit those via the API directly if needed.
 
 **Hashlists** (`fj hashlist <sub>`)
 
@@ -454,6 +464,7 @@ Every route and the capability it requires. The authoritative, always-current co
 | `GET /jobs` | `ViewJobs` |
 | `POST /jobs` | `SubmitJobs` |
 | `POST /jobs/clear` | `SubmitJobs` |
+| `GET /jobs/history` | `ViewJobs` |
 | `GET /jobs/{id}` | `ViewJobs` |
 | `PATCH /jobs/{id}` | `SubmitJobs` |
 | `GET /jobs/{id}/tasks` | `ViewJobs` |
@@ -472,6 +483,7 @@ Every route and the capability it requires. The authoritative, always-current co
 | `GET /devices/{name}/history` | `ViewStats` |
 | `GET /agents` | `ViewStats` |
 | `POST /admin/agent-claims` | `ManageAgents` |
+| `GET` / `PUT /admin/site-settings` | `ManageSettings` |
 | `POST /agent/enroll` | none (claim-token gated) |
 | `GET /agent/stream` | agent certificate (WebSocket) |
 | `GET /agent/files/{id}` | agent certificate (`x-agent-cert` header) |
@@ -487,7 +499,7 @@ Every route and the capability it requires. The authoritative, always-current co
 
 ## 13. Web dashboard
 
-flamejob ships a browser dashboard alongside the TUI. It is a static single-page app that calls the same API and shows the same metrics, gated by the signed-in user's capabilities — so each role sees exactly what it is allowed to (viewers and operators get jobs, chunk breakdowns and device/agent panels; operators also get job controls and "clear finished"; admins get the user- and agent-management forms). The logged-in username and a log-out button sit in the upper-right, next to a light/dark theme toggle.
+flamejob ships a browser dashboard alongside the TUI. It is a static single-page app that calls the same API and shows the same metrics, gated by the signed-in user's capabilities — so each role sees exactly what it is allowed to (viewers and operators get jobs, chunk breakdowns and device/agent panels; operators also get job controls and "clear finished"; admins get the user- and agent-management forms, and — with `ManageSettings` — a **[sitewide settings]** link). The upper-right holds a light/dark theme toggle and the username, which opens a small menu with **API docs** and **API keys**; a log-out button sits beside it, and the running version is shown centred in the footer.
 
 **Submitting jobs.** Superadmin and operator sessions get a "Submit a job" panel: drop a hash file onto it (or click to choose), pick a hash-mode (`-m`, from a list of common modes or a custom number) and either a brute-force mask or an uploaded wordlist (with an optional rule file), and submit — the dashboard creates the hashlist, imports the hashes and queues the job to the agent pool in one step.
 
@@ -495,7 +507,13 @@ flamejob ships a browser dashboard alongside the TUI. It is a static single-page
 
 **Cracked passwords.** On a job's detail panel, roles with `ViewPlaintext` get a "Cracked" tab that swaps the chunk list for a scrollable hash → plaintext list of that job's recovered passwords (backed by `GET /hashlists/{id}/cracked`).
 
+**Completed-jobs history.** The Jobs panel toggles between **Active** (the live queue) and **Completed**. The Completed tab lists every finished job — including ones cleared from the queue with "clear finished" — and selecting one re-opens its cracked passwords. This closes a gap where clearing the queue hid recovered results: the cracked plaintext always survived a clear (it is cascaded from the hashlist, not the job row), but the only path to it used to run through the live job. Clearing now archives finished jobs into a durable `job_history` table (migration `0006`) and `GET /jobs/history` serves them, so the Completed tab keeps that path open. Seeing the plaintext still requires `ViewPlaintext`.
+
+**Devices by host.** Clicking the **Devices** panel heading toggles between a flat list of every sampled device and a tabbed view with one tab per host — useful when a box reports several GPUs plus its CPU. The grouping is derived from the telemetry device names and remembered per browser.
+
 **Where it runs.** A separate listener, configured under `[web]` (default `0.0.0.0:9443`). Set `tls_cert` and `tls_key` to serve it over HTTPS; leave them unset for plain HTTP. The dashboard calls the API on its existing port (`[server].bind`, default `:8443`), which now sends CORS headers so the browser can reach it cross-origin; bearer-token auth still gates every protected route. Point the browser at the API elsewhere with `[web].api_base` (e.g. behind a reverse proxy), or override it on the sign-in screen.
+
+**Sitewide settings (runtime TLS).** Roles with `ManageSettings` (superadmin, admin) get a **[sitewide settings]** link left of the username. It opens a panel to paste a certificate and private key and toggle **HTTPS on tcp/443** with a checkbox; the change applies live — `flamejobd` binds (or drops) a dedicated HTTPS listener on `[web].https_bind` (default `:443`) on the spot, with no restart. This is purely additive: the plain HTTP dashboard on `[web].bind` (default 9443) is never affected, so you can't lock yourself out. The private key is stored **encrypted at rest** (AES-256-GCM, the same key that protects cracked plaintext — §9) and is never returned to the browser; the panel shows only that a key is stored, plus the certificate's fingerprint and whether the listener is up. The settings live in the singleton `site_settings` row (migration `0007`) behind `GET`/`PUT /admin/site-settings`. Binding 443 is privileged — the packaged systemd unit grants `CAP_NET_BIND_SERVICE` so it works without running as root; if the bind fails the HTTP dashboard keeps serving and the panel reports "not listening". Choose a non-privileged `[web].https_bind` if you'd rather not grant the capability.
 
 > **Mixed content:** if you serve the dashboard over HTTPS, the API must also be reachable over HTTPS (front it with TLS or a proxy, per §7) — a browser will block an HTTPS page calling an `http://` API.
 
@@ -515,6 +533,6 @@ curl -H "Authorization: Bearer fj_<your-key>" https://control-plane:8443/jobs
 
 The server recognises the `fj_` prefix, looks the key up by hash, and authenticates the request **as the owning user with that user's current roles** — so a key is exactly as privileged as the person who created it, and role changes take effect immediately (roles are resolved live, not frozen into the key). Each use stamps the key's `last_used_at`.
 
-**Scope & lifecycle.** Keys are per-user: you can only see, create and revoke your own. A key stops working the instant it is revoked or expires, and — unlike JWTs — keys are **not** invalidated by rotating `[auth].jwt_secret`, since they're validated against the database rather than signed. There is no server-wide key list in 1.3.1; an admin who needs to cut off a departed user should disable that user (the `users.disabled` flag), which blocks their keys as well as their login.
+**Scope & lifecycle.** Keys are per-user: you can only see, create and revoke your own. A key stops working the instant it is revoked or expires, and — unlike JWTs — keys are **not** invalidated by rotating `[auth].jwt_secret`, since they're validated against the database rather than signed. There is no server-wide key list yet; an admin who needs to cut off a departed user should disable that user (the `users.disabled` flag), which blocks their keys as well as their login.
 
 **Storage.** Keys live in the `api_keys` table (migration `0004`): `user_id`, `name`, a non-secret display `prefix`, the unique `key_hash` (hex SHA-256), `created_at`, nullable `expires_at` and `last_used_at`, and a `revoked` flag. Deleting a user cascades to their keys.
