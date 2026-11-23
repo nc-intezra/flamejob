@@ -47,6 +47,11 @@ pub struct AgentInfo {
     pub status: String,
     pub enrolled_at: chrono::DateTime<chrono::Utc>,
     pub last_seen: Option<chrono::DateTime<chrono::Utc>>,
+    /// The agent's reported operating system (`linux`, `windows`, `macos`, …),
+    /// or `None` for an agent that enrolled before OS reporting or has not
+    /// reconnected since. Lets the dashboard show an OS-specific status icon.
+    #[serde(default)]
+    pub os: Option<String>,
 }
 
 // ---- WebSocket task protocol ----
@@ -101,8 +106,16 @@ pub struct AgentMetric {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentMsg {
-    /// First frame: identify and present the issued client certificate.
-    Hello { name: String, cert_pem: String },
+    /// First frame: identify and present the issued client certificate. `os` is
+    /// the agent's operating system (`std::env::consts::OS`: `linux`, `windows`,
+    /// `macos`, …), surfaced on the dashboard as an OS-specific status icon;
+    /// defaulted so pre-OS-reporting agents still handshake.
+    Hello {
+        name: String,
+        cert_pem: String,
+        #[serde(default)]
+        os: String,
+    },
     /// Advertise free capacity (number of tasks the agent can accept).
     Ready { slots: u32 },
     /// Reply to ComputeKeyspace.

@@ -359,6 +359,9 @@ async fn run(args: &Args, data_dir: PathBuf, hashcat: String, cert_pem: String) 
         .send(AgentMsg::Hello {
             name: args.name.clone(),
             cert_pem: cert_pem.clone(),
+            // Reported so the control plane / dashboard can show an OS-specific
+            // status icon. Resolves at build time per target: "linux", "windows", …
+            os: std::env::consts::OS.to_string(),
         })
         .await?;
 
