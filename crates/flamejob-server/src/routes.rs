@@ -35,6 +35,10 @@ pub fn router(state: AppState) -> Router {
         .route("/agent/stream", get(crate::agent::agent_stream))
         .route("/agent/files/:id", get(crate::agent::download_file))
         .route("/admin/agent-claims", post(crate::agent::create_claim))
+        .route(
+            "/admin/site-settings",
+            get(crate::settings::get_site_settings).put(crate::settings::put_site_settings),
+        )
         .route("/openapi.json", get(openapi))
         .route("/auth/login", post(login))
         .route("/auth/me", get(me))

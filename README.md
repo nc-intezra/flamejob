@@ -9,7 +9,7 @@ project workspace.
 
 ## Status
 
-**1.5.0** — current release. The Phase 1 single-box core (scheduler, keyspace
+**1.6.0** — current release. The Phase 1 single-box core (scheduler, keyspace
 chunking, ingest/SSE, RBAC), Phase 2 TUI/web dashboards + GPU/host telemetry,
 and Phase 3 distributed agents (enrollment, WebSocket task protocol, remote
 runner) are all in place, plus the work layered on since 1.0.0:
@@ -24,6 +24,9 @@ runner) are all in place, plus the work layered on since 1.0.0:
 - **Web dashboard**: live queue, a completed-jobs history tab that keeps cracked
   results reachable after a job is cleared, device grouping by host, job submit,
   agent enrollment, and user/key administration.
+- **TLS**: serve the API and dashboard over HTTPS from an enterprise certificate
+  natively, or front them with Caddy for automatic Let's Encrypt — see
+  [docs/guides/tls.md](docs/guides/tls.md).
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
@@ -97,10 +100,11 @@ tasks, and push progress, cracked hashes and device telemetry. The scheduler
 dispatches through a `RemoteRunner` that implements the same `Runner` trait as
 the local hashcat runner, so chunking and ETA logic are unchanged.
 
-> Transport note: the issued certificates are intended for mutual TLS. In this
-> build the agent socket authenticates at the application layer (certificate
-> fingerprint) and transport TLS is expected to be terminated by the deployment
-> (a rustls acceptor or reverse proxy). `GET /agents` lists enrolled workers.
+> Transport note: the agent socket authenticates at the application layer (the
+> agent sends its issued certificate in the WebSocket `Hello`, matched by
+> fingerprint), independent of transport TLS. Terminate transport TLS natively on
+> flamejobd (`[server].tls_cert`/`tls_key`) or at a reverse proxy — see
+> [docs/guides/tls.md](docs/guides/tls.md). `GET /agents` lists enrolled workers.
 
 ## Roles (RBAC)
 

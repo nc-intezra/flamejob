@@ -24,6 +24,10 @@ pub enum Capability {
     ViewJobs,
     ManageDirectory,
     ManageAgents,
+    /// Change sitewide settings, including the TLS certificate/key and the
+    /// HTTPS-on-443 toggle. High-privilege: whoever holds it controls the site's
+    /// transport security. Granted to superadmin and admin.
+    ManageSettings,
 }
 
 impl Role {
@@ -39,10 +43,11 @@ impl Role {
                 ViewJobs,
                 ManageDirectory,
                 ManageAgents,
+                ManageSettings,
             ],
             // Admin manages users and agents; ViewJobs lets an admin see the
             // job queue they pin to agents (you can't pin what you can't see).
-            Role::Admin => &[ManageUsers, ManageAgents, ViewJobs],
+            Role::Admin => &[ManageUsers, ManageAgents, ViewJobs, ManageSettings],
             Role::Operator => &[SubmitJobs, Ingest, ViewPlaintext, ViewStats, ViewJobs],
             Role::Viewer => &[ViewStats, ViewJobs],
         }
@@ -125,6 +130,11 @@ mod tests {
         assert!(Role::Superadmin.has(Capability::ManageAgents));
         assert!(Role::Admin.has(Capability::ManageAgents));
         assert!(!Role::Operator.has(Capability::ManageAgents));
+        // Sitewide settings (TLS cert/key, HTTPS toggle): superadmin + admin only.
+        assert!(Role::Superadmin.has(Capability::ManageSettings));
+        assert!(Role::Admin.has(Capability::ManageSettings));
+        assert!(!Role::Operator.has(Capability::ManageSettings));
+        assert!(!Role::Viewer.has(Capability::ManageSettings));
     }
 
     #[test]

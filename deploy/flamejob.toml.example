@@ -1,5 +1,10 @@
 [server]
 bind = "0.0.0.0:8443"
+# Serve the API directly over HTTPS with a pre-created certificate (e.g. from an
+# enterprise CA). Set BOTH or neither. When unset, the API is plain HTTP and TLS
+# is expected to be terminated by a reverse proxy (see docs/guides/tls.md).
+# tls_cert = "/etc/flamejob/api.crt"
+# tls_key  = "/etc/flamejob/api.key"
 
 [database]
 # 'local'  = installer manages a Postgres on this box
@@ -37,9 +42,13 @@ max_chunks = 500
 # browser dashboard (static SPA that calls the API); mirrors the TUI
 enabled = true
 bind    = "0.0.0.0:9443"
-# set both for HTTPS; leave unset for plain HTTP
+# set both for HTTPS on `bind`; leave unset for plain HTTP
 # tls_cert = "/etc/flamejob/web.crt"
 # tls_key  = "/etc/flamejob/web.key"
+# Address for the optional HTTPS listener a superadmin/admin enables at runtime
+# from Sitewide settings (cert/key are stored in the DB). Additive — `bind` above
+# stays HTTP. Binding :443 needs CAP_NET_BIND_SERVICE (see the systemd unit).
+# https_bind = "0.0.0.0:443"
 # API URL the browser should call (default: derived from page host + API port)
 # api_base = "https://flamejob.example/api"
 theme = "dark"

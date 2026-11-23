@@ -97,6 +97,18 @@
   .iconbtn{background:transparent;border:1px solid var(--border);color:var(--ink);
     border-radius:8px;padding:5px 10px;font-size:12px}
   .iconbtn:hover{border-color:var(--accent);color:var(--accent)}
+  .iconbtn.sitesettings{font-family:var(--mono);color:var(--warn)}
+  .iconbtn.sitesettings:hover{border-color:var(--warn);color:var(--warn)}
+  /* ---- sitewide settings modal ---- */
+  .site-status{background:var(--panel2);border:1px solid var(--border);border-radius:8px;
+    padding:8px 10px;margin-bottom:12px;font-family:var(--mono);font-size:12px;color:var(--dim);line-height:1.6}
+  .site-status b{color:var(--ink);font-weight:600}
+  .site-status .on{color:var(--good)} .site-status .off{color:var(--dim)}
+  .site-form{display:flex;flex-direction:column;gap:10px}
+  .site-check{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink);cursor:pointer}
+  .site-form textarea{background:var(--panel2);border:1px solid var(--border);color:var(--ink);
+    border-radius:6px;padding:8px 9px;font-size:11px;font-family:var(--mono);width:100%;resize:vertical;line-height:1.4}
+  .site-actions{display:flex;align-items:center;gap:12px}
 
   /* Stacked regions: top (Jobs | Job detail, detail is tall), mid (Submit | Devices,
      each half-width), then full-width Agents / Admin. */
@@ -298,6 +310,7 @@
     <div class="right">
       <span class="clock" id="clock"></span>
       <button class="iconbtn" id="themeBtn">◐ theme</button>
+      <button class="iconbtn sitesettings" id="siteSettingsBtn" title="Sitewide settings (TLS)" style="display:none">[sitewide settings]</button>
       <div class="usermenu-wrap">
         <button class="user" id="userBtn" title="Account" aria-haspopup="true" aria-expanded="false"><span id="uName" class="mono"></span><span class="role" id="uRoles"></span><span class="caret">▾</span></button>
         <div class="usermenu" id="userMenu" style="display:none" role="menu">
@@ -326,6 +339,24 @@
       </form>
       <div class="key-reveal" id="keyReveal" style="display:none"></div>
       <div class="keys-list" id="keysList"></div>
+    </div>
+  </div>
+
+  <!-- Sitewide settings modal (superadmin/admin — TLS for HTTPS on :443) -->
+  <div class="modal-backdrop" id="siteModal" style="display:none">
+    <div class="modal">
+      <div class="modal-head"><span class="t">Sitewide settings</span><button class="iconbtn" id="siteClose">✕</button></div>
+      <p class="modal-sub">Serve this dashboard over <strong>HTTPS on tcp/443</strong> with your own certificate. The plain HTTP dashboard on its existing port keeps working — this only adds an encrypted listener. The private key is stored <strong>encrypted</strong> and never shown again.</p>
+      <div class="site-status" id="siteStatus"></div>
+      <form class="site-form" id="siteForm">
+        <label class="site-check"><input type="checkbox" id="siteHttps"> Enable HTTPS on tcp/443</label>
+        <div class="fld"><label>Certificate (PEM — full chain)</label>
+          <textarea id="siteCert" rows="5" spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----&#10;… leave blank to keep the stored certificate"></textarea></div>
+        <div class="fld"><label>Private key (PEM)</label>
+          <textarea id="siteKey" rows="5" spellcheck="false" placeholder="-----BEGIN PRIVATE KEY-----&#10;… leave blank to keep the stored key"></textarea></div>
+        <p class="modal-sub" style="margin:0">Tip: if you serve the dashboard over HTTPS, the API should be reachable over HTTPS too (<code>[server].tls_cert</code> or a proxy) — a browser blocks an HTTPS page calling an HTTP API.</p>
+        <div class="site-actions"><button class="go" type="submit" id="siteSave">Save</button><span class="result" id="siteOut"></span></div>
+      </form>
     </div>
   </div>
 
@@ -420,8 +451,8 @@ document.getElementById("verTag").textContent = CFG.version ? ("v"+CFG.version) 
 
 // ---- role -> capability map (mirrors flamejob-core::model) ----
 const ROLE_CAPS = {
-  superadmin:["manage_users","submit_jobs","ingest","view_plaintext","view_stats","view_jobs","manage_directory","manage_agents"],
-  admin:["manage_users","manage_agents","view_jobs"],
+  superadmin:["manage_users","submit_jobs","ingest","view_plaintext","view_stats","view_jobs","manage_directory","manage_agents","manage_settings"],
+  admin:["manage_users","manage_agents","view_jobs","manage_settings"],
   operator:["submit_jobs","ingest","view_plaintext","view_stats","view_jobs"],
   viewer:["view_stats","view_jobs"],
 };
@@ -562,6 +593,8 @@ function gatePanels(){
   const admin = can("manage_users") || can("manage_agents");
   document.getElementById("adminPanel").style.display = admin ? "flex":"none";
   if(admin) renderAdmin();
+  // Sitewide settings link (TLS) — superadmin/admin only.
+  document.getElementById("siteSettingsBtn").style.display = can("manage_settings") ? "inline-block" : "none";
   // Job submission area (Superadmin + Operator — SubmitJobs).
   const canSubmit = can("submit_jobs");
   document.getElementById("submitPanel").style.display = canSubmit ? "flex":"none";
@@ -1100,6 +1133,53 @@ document.addEventListener("keydown", e=>{ if(e.key==="Escape") toggleUserMenu(fa
 document.getElementById("keysClose").onclick=closeKeys;
 document.getElementById("keysModal").onclick=e=>{ if(e.target.id==="keysModal") closeKeys(); };
 document.getElementById("keysForm").onsubmit=createApiKey;
+
+// ---- sitewide settings (TLS) modal ----
+function openSite(){
+  document.getElementById("siteModal").style.display="flex";
+  document.getElementById("siteOut").textContent="";
+  document.getElementById("siteCert").value="";
+  document.getElementById("siteKey").value="";
+  loadSite();
+}
+function closeSite(){ document.getElementById("siteModal").style.display="none"; }
+async function loadSite(){
+  try{ renderSiteStatus(await api("/admin/site-settings")); }
+  catch(err){ document.getElementById("siteStatus").innerHTML=`<span class="off">couldn't load settings: ${esc(err.message)}</span>`; }
+}
+function renderSiteStatus(s){
+  document.getElementById("siteHttps").checked = !!s.https_enabled;
+  const enabled = s.https_enabled ? `<span class="on">enabled</span>` : `<span class="off">disabled</span>`;
+  const listening = !s.https_enabled ? `<span class="off">—</span>`
+    : (s.https_listening ? `<span class="on">listening on ${esc(s.https_bind)}</span>`
+       : `<span class="off">not listening — check the cert, and that the server may bind ${esc(s.https_bind)}</span>`);
+  const cert = s.has_cert ? (`stored`+(s.cert_fingerprint?` · <b title="${esc(s.cert_fingerprint)}">${esc(s.cert_fingerprint.slice(0,23))}…</b>`:"")) : `<span class="off">none</span>`;
+  const key = s.has_key ? "stored <span class=\"off\">(encrypted)</span>" : `<span class="off">none</span>`;
+  document.getElementById("siteStatus").innerHTML =
+    `HTTPS: ${enabled} · ${listening}<br>Certificate: ${cert}<br>Private key: ${key}`+
+    (s.updated_at?`<br><span class="off">updated ${new Date(s.updated_at).toLocaleString()}</span>`:"");
+}
+async function saveSite(e){
+  e.preventDefault();
+  const out=document.getElementById("siteOut"); out.style.color="var(--bad)"; out.textContent="";
+  const body={ https_enabled: document.getElementById("siteHttps").checked };
+  const cert=document.getElementById("siteCert").value.trim(), key=document.getElementById("siteKey").value.trim();
+  if(cert) body.tls_cert_pem=cert;
+  if(key) body.tls_key_pem=key;
+  const btn=document.getElementById("siteSave"); btn.disabled=true; btn.textContent="Saving…";
+  try{
+    const s=await api("/admin/site-settings",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    out.style.color="var(--good)"; out.textContent="Saved.";
+    document.getElementById("siteCert").value=""; document.getElementById("siteKey").value="";
+    renderSiteStatus(s);
+    setTimeout(loadSite, 1200); // the :443 listener rebinds asynchronously
+  }catch(err){ out.style.color="var(--bad)"; out.textContent = err.message || "save failed"; }
+  finally{ btn.disabled=false; btn.textContent="Save"; }
+}
+document.getElementById("siteSettingsBtn").onclick=openSite;
+document.getElementById("siteClose").onclick=closeSite;
+document.getElementById("siteModal").onclick=e=>{ if(e.target.id==="siteModal") closeSite(); };
+document.getElementById("siteForm").onsubmit=saveSite;
 
 // ---- job -> agent pinning (superadmin/admin) ----
 // Left-clicking a job name opens a menu to pin the job to a specific agent;
