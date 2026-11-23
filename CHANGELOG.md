@@ -18,6 +18,12 @@ icons.
   memory. Uploaded files appear immediately in the *Submit a job* wordlist/rule
   pickers. Visible to **superadmin, admin, and operator** (the `Ingest`
   capability).
+- **Endpoint-storage gauge.** The ingest panel shows a horizontal gauge of how
+  full the volume behind the file endpoint (`data_dir/files`) is — used / total /
+  free with a percentage, colour-shifting amber at 75% and red at 90%, plus
+  flamejob's own footprint drawn as a distinct segment and summarised below. New
+  `GET /files/usage` (volume figures from `sysinfo`; `Ingest` capability). The
+  gauge refreshes after each upload so you can see a large wordlist land.
 - **OS-aware agent status icons.** Agents now report their operating system
   (`std::env::consts::OS`) on the WebSocket `Hello` frame. The Agents panel shows
   a Linux penguin (Tux) or a four-pane Windows glyph in place of the plain status

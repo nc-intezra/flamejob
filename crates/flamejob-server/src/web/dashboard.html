@@ -247,6 +247,20 @@
   .filelist li .rm{flex:0 0 auto;cursor:pointer;color:var(--dim);border:none;background:none;font-size:14px;line-height:1;padding:0 2px}
   .filelist li .rm:hover{color:var(--bad)}
 
+  /* ---- endpoint-storage gauge (ingest pane) ---- */
+  .storage-gauge{padding:2px 12px 12px}
+  .sg-head{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:5px}
+  .sg-label{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim)}
+  .sg-nums{font-family:var(--mono);font-size:11px;color:var(--ink)}
+  .sg-nums .pctbig{font-weight:700} .sg-nums .free{color:var(--dim)}
+  .sg-track{position:relative;height:14px;background:var(--track);border-radius:7px;overflow:hidden}
+  /* Layered left-to-right: total used (fullness colour), then flamejob's own
+     slice drawn on top at the left so it reads as a distinct segment. */
+  .sg-fill{position:absolute;top:0;left:0;height:100%;background:var(--good);transition:width .4s ease,background .3s}
+  .sg-fill.warn{background:var(--warn)} .sg-fill.bad{background:var(--bad)}
+  .sg-fj{position:absolute;top:0;left:0;height:100%;background:var(--accent);transition:width .4s ease}
+  .sg-sub{margin-top:4px;font-family:var(--mono);font-size:10px;color:var(--dim)}
+
   /* ---- agent OS status icon (replaces the plain status dot) ---- */
   .ag .osicon{width:16px;height:16px;flex:none;display:inline-block;vertical-align:middle}
   .ag .osicon.offline{opacity:.32;filter:grayscale(1)}
@@ -677,6 +691,7 @@ async function tick(){
     }
     if(can("view_stats")) renderDevices(await api("/devices"));
     if(can("view_stats")) renderAgents(await api("/agents"));
+    if(can("ingest")) refreshStorage(); // throttled internally (~8s)
     if(can("view_jobs") && S.selected && S.selJob){
       // Archived (history) selections only have cracked plaintext — no live tasks.
       if(S.selIsHist || S.detailView==="cracked") loadCracked(S.selJob.hashlist_id);
@@ -1108,11 +1123,49 @@ function renderIngest(){
   if(b.dataset.built) return; // build once; keep a partly-filled queue across ticks
   b.dataset.built="1";
   b.innerHTML = `
+    <div class="storage-gauge" id="storageGauge" title="Fullness of the volume backing the file endpoint">
+      <div class="sg-head"><span class="sg-label">Endpoint storage</span><span class="sg-nums" id="sgNums"><span class="dim">reading…</span></span></div>
+      <div class="sg-track"><div class="sg-fill" id="sgFill" style="width:0%"></div><div class="sg-fj" id="sgFj" style="width:0%"></div></div>
+      <div class="sg-sub" id="sgSub"></div>
+    </div>
     <div class="ingest-grid">
       ${ingestColHTML("wordlist","Wordlists","drop .txt / .lst / .dict / .gz — or any file")}
       ${ingestColHTML("rule","Rules","drop hashcat .rule lists")}
     </div>`;
   ingestWire("wordlist"); ingestWire("rule");
+  refreshStorage();
+}
+// Fetch + render the endpoint-storage gauge. Throttled so the periodic tick
+// doesn't hammer the disk-stat syscall sweep; forced after an upload.
+let STORAGE_AT = 0;
+async function refreshStorage(force){
+  const gauge=document.getElementById("storageGauge");
+  if(!gauge) return;
+  const now=Date.now();
+  if(!force && now-STORAGE_AT < 8000) return;
+  STORAGE_AT = now;
+  try{
+    const u=await api("/files/usage");
+    const total=+u.total_bytes||0, used=+u.used_bytes||0, fj=+u.files_bytes||0, avail=+u.available_bytes||0;
+    const nums=document.getElementById("sgNums"), fill=document.getElementById("sgFill"), fjel=document.getElementById("sgFj"), sub=document.getElementById("sgSub");
+    if(total>0){
+      const pct=Math.min(100, Math.round(used/total*100));
+      const fjPct=Math.min(100, used>0?(fj/total*100):0);
+      fill.style.width=pct+"%";
+      fill.classList.toggle("warn", pct>=75 && pct<90);
+      fill.classList.toggle("bad", pct>=90);
+      fjel.style.width=fjPct.toFixed(1)+"%";
+      nums.innerHTML=`<span class="pctbig">${pct}%</span> · ${fmtBytes(used)} / ${fmtBytes(total)} <span class="free">· ${fmtBytes(avail)} free</span>`;
+      sub.textContent=`flamejob: ${fmtBytes(fj)} across ${u.file_count} file(s)`;
+    } else {
+      // Volume couldn't be sampled; still show what flamejob itself holds.
+      fill.style.width="0%"; fjel.style.width="0%";
+      nums.innerHTML=`<span class="dim">volume capacity unavailable</span>`;
+      sub.textContent=`flamejob: ${fmtBytes(fj)} across ${u.file_count} file(s)`;
+    }
+  }catch(e){
+    const nums=document.getElementById("sgNums"); if(nums) nums.innerHTML=`<span class="dim">usage unavailable</span>`;
+  }
 }
 function ingestColHTML(kind, title, hint){
   return `<div class="ingest-col" data-kind="${kind}">
@@ -1184,6 +1237,7 @@ async function ingestUploadAll(kind){
   st.busy=false; ingestRender(kind);
   // Surface the new files in the Submit-a-job pickers immediately.
   if(document.getElementById("wordlist")) loadFileOptions();
+  refreshStorage(true); // force — the gauge should reflect the just-uploaded bytes
   const ok=st.files.filter(x=>x.status==="ok").length, bad=st.files.filter(x=>x.status==="err").length;
   flash(`${kind}s: ${ok} uploaded${bad?`, ${bad} failed`:""}`, bad>0);
 }
