@@ -82,6 +82,24 @@ Let's Encrypt use Option 1. This keeps certificate automation out of the control
 plane, where an expiry or challenge failure would be a single point of failure;
 a dedicated proxy renews independently of the application.
 
+## Option 4 — Sitewide settings in the dashboard (runtime, no restart)
+
+A superadmin or admin can paste a certificate and private key straight into the
+dashboard — **[sitewide settings]** (top bar, next to the username) — and toggle
+**HTTPS on tcp/443** with a checkbox. The change takes effect live: the server
+binds (or drops) a dedicated :443 HTTPS listener on the spot. The existing plain
+HTTP dashboard port (default 9443) is never affected, so you never lock yourself
+out.
+
+- The private key is stored **encrypted at rest** (AES-256-GCM, the same cipher
+  that protects cracked plaintext) and is never shown again.
+- Binding 443 is privileged. Running under systemd, the provided unit grants
+  `CAP_NET_BIND_SERVICE`; otherwise run with that capability or choose a
+  non-privileged `[web].https_bind`. If the bind fails, the HTTP dashboard keeps
+  running and the settings panel shows "not listening".
+- Because this serves the dashboard over HTTPS, make the API reachable over HTTPS
+  too (Option 2/3 or a proxy) — a browser blocks an HTTPS page calling an HTTP API.
+
 ## Which to choose
 
 | Situation | Use |
@@ -91,3 +109,4 @@ a dedicated proxy renews independently of the application.
 | Internal ACME server (smallstep, etc.) | Option 2 (`issuer acme`) |
 | No proxy allowed in the path | Option 3 (native rustls) |
 | Air-gapped / private network, self-signed | Option 2 (`tls internal`) or Option 3 |
+| Want to add/rotate the dashboard cert from the UI, live | Option 4 (Sitewide settings) |

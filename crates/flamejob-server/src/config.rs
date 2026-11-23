@@ -126,10 +126,21 @@ pub struct WebCfg {
     pub api_base: Option<String>,
     /// Default theme the dashboard opens with: `dark` or `light`.
     pub theme: String,
+    /// Address for the optional HTTPS dashboard listener that a superadmin/admin
+    /// enables at runtime from Sitewide settings (cert/key live in the database,
+    /// not here). Separate from `bind`, which always stays plain HTTP. Binding
+    /// 443 needs elevated privilege (root or `CAP_NET_BIND_SERVICE`); if the bind
+    /// fails the HTTP listener is unaffected.
+    #[serde(default = "default_https_bind")]
+    pub https_bind: String,
     /// Browser origins allowed to call the API (CORS). Empty = allow any origin
     /// (the API is still protected by bearer-token auth).
     #[serde(default)]
     pub allowed_origins: Vec<String>,
+}
+
+fn default_https_bind() -> String {
+    "0.0.0.0:443".into()
 }
 
 impl Default for WebCfg {
@@ -141,6 +152,7 @@ impl Default for WebCfg {
             tls_key: None,
             api_base: None,
             theme: "dark".into(),
+            https_bind: default_https_bind(),
             allowed_origins: Vec::new(),
         }
     }

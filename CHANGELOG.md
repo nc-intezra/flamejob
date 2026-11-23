@@ -19,7 +19,17 @@ TLS: native HTTPS for the API and a Caddy option for automatic certificates.
   [Caddy](https://caddyserver.com): automatic Let's Encrypt (ACME) by default,
   or a `tls <cert> <key>` enterprise certificate / internal ACME issuer. The
   `/agent/stream` WebSocket proxies through transparently.
-- **TLS guide** at `docs/guides/tls.md` covering all three paths.
+- **Sitewide settings in the dashboard (runtime TLS).** A superadmin/admin can
+  paste a certificate + private key and toggle **HTTPS on tcp/443** from a new
+  **[sitewide settings]** panel (next to the username). The change applies live —
+  the server binds or drops a dedicated :443 HTTPS listener without a restart —
+  and the plain HTTP dashboard port (default 9443) is never affected. The private
+  key is stored encrypted at rest (same AES-256-GCM cipher as cracked plaintext).
+  New `site_settings` table (migration `0007`), `ManageSettings` capability
+  (superadmin + admin), and `GET`/`PUT /admin/site-settings`. The HTTPS bind
+  address is `[web].https_bind` (default `0.0.0.0:443`); the systemd unit grants
+  `CAP_NET_BIND_SERVICE` so the privileged port binds without root.
+- **TLS guide** at `docs/guides/tls.md` covering all four paths.
 
 ### Notes
 - Agent authentication is unchanged and independent of transport TLS: an agent

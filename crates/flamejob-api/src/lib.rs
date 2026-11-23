@@ -156,6 +156,37 @@ pub struct ClearedJobs {
     pub cleared: i64,
 }
 
+/// Sitewide settings as shown to a superadmin/admin. The private key is never
+/// returned; only whether one is stored and the certificate's fingerprint.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SiteSettingsView {
+    /// Whether the HTTPS-on-443 dashboard listener is enabled.
+    pub https_enabled: bool,
+    /// Whether a certificate is stored.
+    pub has_cert: bool,
+    /// Whether a private key is stored.
+    pub has_key: bool,
+    /// Whether the :443 listener is actually serving right now (false if enabled
+    /// but the bind failed, e.g. the process lacks permission for port 443).
+    pub https_listening: bool,
+    /// Address the HTTPS listener binds (e.g. `0.0.0.0:443`).
+    pub https_bind: String,
+    /// SHA-256 fingerprint of the stored certificate, for display.
+    pub cert_fingerprint: Option<String>,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+/// Update to the sitewide settings. A `null`/omitted `tls_cert_pem` or
+/// `tls_key_pem` keeps the currently stored value; send a new PEM to replace it.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SiteSettingsUpdate {
+    pub https_enabled: bool,
+    #[serde(default)]
+    pub tls_cert_pem: Option<String>,
+    #[serde(default)]
+    pub tls_key_pem: Option<String>,
+}
+
 /// RFC 7807 problem+json error body.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Problem {
@@ -295,6 +326,8 @@ impl Event {
         ApiKeyView,
         ApiKeyCreated,
         ClearedJobs,
+        SiteSettingsView,
+        SiteSettingsUpdate,
         Problem,
         Event,
         DeviceView,

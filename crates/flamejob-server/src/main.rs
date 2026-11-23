@@ -10,6 +10,7 @@ mod openapi;
 mod pki;
 mod routes;
 mod scheduler;
+mod settings;
 mod state;
 mod telemetry;
 mod web;

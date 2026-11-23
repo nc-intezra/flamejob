@@ -27,6 +27,10 @@ pub fn spawn(state: crate::state::AppState) {
         return;
     }
     let page: Arc<str> = render_dashboard(&state.cfg).into();
+    // Optional HTTPS dashboard listener on [web].https_bind (default :443),
+    // toggled at runtime from Sitewide settings with a DB-stored cert/key. Fully
+    // independent of — and never disturbs — the plain HTTP listener below.
+    tokio::spawn(site_https_manager(state.clone(), page.clone()));
     tokio::spawn(async move {
         let addr: SocketAddr = match cfg.bind.parse() {
             Ok(a) => a,
@@ -72,6 +76,82 @@ fn router(page: Arc<str>) -> Router {
             }),
         )
         .route("/healthz", get(|| async { "ok" }))
+}
+
+/// Manage the optional HTTPS dashboard listener on `[web].https_bind` (default
+/// :443). Reads the `site_settings` row and, when HTTPS is enabled with a valid
+/// cert/key, binds the listener; when disabled it drops it. Re-evaluates every
+/// time `state.tls_reload` is bumped (the Sitewide-settings PUT handler), so the
+/// toggle takes effect live. Binding :443 needs elevated privilege — a bind
+/// failure is logged and leaves the plain HTTP dashboard untouched.
+async fn site_https_manager(state: crate::state::AppState, page: Arc<str>) {
+    use std::sync::atomic::Ordering;
+    let addr: SocketAddr = match state.cfg.web.https_bind.parse() {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::error!(bind = %state.cfg.web.https_bind, error = %e,
+                "invalid [web].https_bind; HTTPS-on-443 disabled");
+            return;
+        }
+    };
+    let mut reload_rx = state.tls_reload.subscribe();
+    loop {
+        // Desired state from the database.
+        let mut handle: Option<axum_server::Handle<SocketAddr>> = None;
+        match crate::settings::tls_material(&state).await {
+            Some((cert, key)) => match RustlsConfig::from_pem(cert, key).await {
+                // Bind a std listener first so a port-permission failure (e.g. 443
+                // without privilege) is detected synchronously, keeping the HTTP
+                // dashboard untouched.
+                Ok(tls) => match std::net::TcpListener::bind(addr) {
+                    Ok(listener) => {
+                        let _ = listener.set_nonblocking(true);
+                        match axum_server::from_tcp_rustls(listener, tls) {
+                            Ok(server) => {
+                                let h: axum_server::Handle<SocketAddr> = axum_server::Handle::new();
+                                let app = router(page.clone());
+                                state.tls_listening.store(true, Ordering::Relaxed);
+                                tracing::info!(%addr, "flamejob dashboard HTTPS listening (sitewide settings)");
+                                let listening = state.tls_listening.clone();
+                                let server = server.handle(h.clone());
+                                tokio::spawn(async move {
+                                    if let Err(e) = server.serve(app.into_make_service()).await {
+                                        tracing::error!(error = %e, "dashboard HTTPS listener stopped");
+                                    }
+                                    listening.store(false, Ordering::Relaxed);
+                                });
+                                handle = Some(h);
+                            }
+                            Err(e) => {
+                                state.tls_listening.store(false, Ordering::Relaxed);
+                                tracing::error!(error = %e, "could not start dashboard HTTPS server");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        state.tls_listening.store(false, Ordering::Relaxed);
+                        tracing::error!(%addr, error = %e,
+                            "could not bind dashboard HTTPS (port 443 needs root or CAP_NET_BIND_SERVICE)");
+                    }
+                },
+                Err(e) => {
+                    state.tls_listening.store(false, Ordering::Relaxed);
+                    tracing::error!(error = %e, "stored TLS cert/key failed to load; HTTPS not started");
+                }
+            },
+            None => {
+                state.tls_listening.store(false, Ordering::Relaxed);
+            }
+        }
+        // Block until the settings change, then tear down and re-evaluate.
+        if reload_rx.changed().await.is_err() {
+            break; // state (and the sender) dropped — process shutting down
+        }
+        if let Some(h) = handle {
+            h.graceful_shutdown(Some(std::time::Duration::from_secs(3)));
+        }
+        state.tls_listening.store(false, Ordering::Relaxed);
+    }
 }
 
 /// Inject runtime configuration (API location + default theme) into the static
