@@ -16,6 +16,15 @@ pub struct Config {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerCfg {
     pub bind: String,
+    /// PEM cert + key for the API listener. When both are set the API is served
+    /// over HTTPS (rustls); otherwise it is served over plain HTTP and transport
+    /// TLS is expected to be terminated by a reverse proxy (e.g. Caddy). Use this
+    /// to serve a pre-created certificate from an enterprise CA directly, with no
+    /// proxy. Both must be set together.
+    #[serde(default)]
+    pub tls_cert: Option<String>,
+    #[serde(default)]
+    pub tls_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,10 +126,21 @@ pub struct WebCfg {
     pub api_base: Option<String>,
     /// Default theme the dashboard opens with: `dark` or `light`.
     pub theme: String,
+    /// Address for the optional HTTPS dashboard listener that a superadmin/admin
+    /// enables at runtime from Sitewide settings (cert/key live in the database,
+    /// not here). Separate from `bind`, which always stays plain HTTP. Binding
+    /// 443 needs elevated privilege (root or `CAP_NET_BIND_SERVICE`); if the bind
+    /// fails the HTTP listener is unaffected.
+    #[serde(default = "default_https_bind")]
+    pub https_bind: String,
     /// Browser origins allowed to call the API (CORS). Empty = allow any origin
     /// (the API is still protected by bearer-token auth).
     #[serde(default)]
     pub allowed_origins: Vec<String>,
+}
+
+fn default_https_bind() -> String {
+    "0.0.0.0:443".into()
 }
 
 impl Default for WebCfg {
@@ -132,6 +152,7 @@ impl Default for WebCfg {
             tls_key: None,
             api_base: None,
             theme: "dark".into(),
+            https_bind: default_https_bind(),
             allowed_origins: Vec::new(),
         }
     }
@@ -142,6 +163,8 @@ impl Default for Config {
         Self {
             server: ServerCfg {
                 bind: "0.0.0.0:8443".into(),
+                tls_cert: None,
+                tls_key: None,
             },
             database: DatabaseCfg {
                 mode: "local".into(),

@@ -9,6 +9,10 @@ Environment=FLAMEJOB_CONFIG=/etc/flamejob/flamejob.toml
 ExecStart=/usr/bin/flamejobd
 Restart=on-failure
 RestartSec=5
+# Allow binding the privileged HTTPS port (443) when a superadmin/admin enables
+# HTTPS from Sitewide settings, without running as root. Harmless if unused.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 
 [Install]
 WantedBy=multi-user.target

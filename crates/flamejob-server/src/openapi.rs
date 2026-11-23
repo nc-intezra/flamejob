@@ -64,6 +64,8 @@ impl Modify for SecurityAddon {
         crate::routes::delete_file,
         crate::routes::events,
         crate::routes::create_user,
+        crate::settings::get_site_settings,
+        crate::settings::put_site_settings,
         crate::routes::list_devices,
         crate::routes::device_history,
         crate::agent::list_agents,

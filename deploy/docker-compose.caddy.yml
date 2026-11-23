@@ -1,0 +1,30 @@
+# Overlay that puts Caddy in front of flamejobd for automatic TLS.
+#
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.caddy.yml up --build
+#
+# Caddy terminates TLS (automatic Let's Encrypt by default; edit deploy/caddy/Caddyfile
+# for an enterprise cert or internal ACME) and proxies to flamejobd on plain HTTP,
+# so the API's published port is dropped here — only Caddy is exposed.
+services:
+  flamejobd:
+    # Behind the proxy the API need not be published directly.
+    ports: !reset []
+
+  caddy:
+    image: caddy:2
+    depends_on:
+      - flamejobd
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Mount enterprise certs here and reference them in the Caddyfile if used:
+      # - ./caddy/tls:/etc/flamejob/tls:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  caddy-data: {}
+  caddy-config: {}

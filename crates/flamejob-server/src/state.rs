@@ -4,12 +4,14 @@ use std::sync::Arc;
 use jsonwebtoken::{DecodingKey, EncodingKey};
 use metrics_exporter_prometheus::PrometheusHandle;
 
+use std::sync::atomic::AtomicBool;
+
 use crate::agent::AgentHub;
 use crate::config::Config;
 use crate::crypto::Cipher;
 use crate::pki::Pki;
 use flamejob_api::{DeviceView, Event};
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, watch, RwLock};
 
 #[derive(Clone)]
 pub struct AppState(Arc<Inner>);
@@ -25,6 +27,11 @@ pub struct Inner {
     pub agents: Arc<AgentHub>,
     pub pki: Arc<Pki>,
     pub events: broadcast::Sender<Event>,
+    /// Bumped whenever sitewide TLS settings change, to tell the HTTPS-on-443
+    /// listener manager to re-read the `site_settings` row and (re)bind or drop.
+    pub tls_reload: watch::Sender<u64>,
+    /// True while the :443 HTTPS listener is actually serving (for status display).
+    pub tls_listening: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -35,6 +42,7 @@ impl AppState {
         let cipher = Cipher::from_bytes(crate::crypto::key_from_config(&cfg));
         let pki = Pki::load_or_create(std::path::Path::new(&cfg.hashcat.data_dir))?;
         let (events, _) = broadcast::channel(256);
+        let (tls_reload, _) = watch::channel(0u64);
         Ok(Self(Arc::new(Inner {
             cfg,
             db,
@@ -46,6 +54,8 @@ impl AppState {
             agents: AgentHub::new(),
             pki: Arc::new(pki),
             events,
+            tls_reload,
+            tls_listening: Arc::new(AtomicBool::new(false)),
         })))
     }
 }
