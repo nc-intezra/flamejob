@@ -131,7 +131,9 @@ pub struct WebCfg {
     /// from its own host and the API port, and the user can override it in the
     /// UI.
     pub api_base: Option<String>,
-    /// Default theme the dashboard opens with: `dark` or `light`.
+    /// Default theme the dashboard opens with. Design themes: `mission`
+    /// (Mission Control — the default), `tufte`, `workbench`. Classic themes:
+    /// `dark`, `light`, `oled`. Unknown values fall back to `mission` client-side.
     pub theme: String,
     /// Address for the optional HTTPS dashboard listener that a superadmin/admin
     /// enables at runtime from Sitewide settings (cert/key live in the database,
@@ -158,7 +160,7 @@ impl Default for WebCfg {
             tls_cert: None,
             tls_key: None,
             api_base: None,
-            theme: "dark".into(),
+            theme: "mission".into(),
             https_bind: default_https_bind(),
             allowed_origins: Vec::new(),
         }
