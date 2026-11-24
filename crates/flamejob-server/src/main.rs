@@ -11,6 +11,7 @@ mod metrics;
 mod openapi;
 mod pki;
 mod pools;
+mod preempt;
 mod routes;
 mod scheduler;
 mod settings;

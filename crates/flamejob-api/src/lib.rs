@@ -58,6 +58,14 @@ pub struct JobView {
     #[schema(value_type = String)]
     pub state: JobState,
     pub priority: i32,
+    /// One-off priority override (PR4); null = none. Effective priority is
+    /// COALESCE(priority_override, priority); lower number = higher priority.
+    #[serde(default)]
+    pub priority_override: Option<i32>,
+    /// Preemption marker (PR4): null | "requeued" (evicted, resuming) |
+    /// "cancelled" (evicted, terminal).
+    #[serde(default)]
+    pub preempt_state: Option<String>,
     pub created_at: DateTime<Utc>,
     pub est_completion: Option<DateTime<Utc>>,
     pub progress: f64,
@@ -357,6 +365,29 @@ pub struct DirectoryGrantEntry {
     pub group_cn: Option<String>,
 }
 
+/// Set or clear a job's one-off priority override (PR4). `priority_override`
+/// null clears it; lower number = higher priority.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PriorityOverrideRequest {
+    pub priority_override: Option<i32>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// Preempt a running job (PR4). `mode` = "requeue" (evict + resume later, with the
+/// unfinished keyspace handed to `target_pool_id` if given) or "cancel" (hard
+/// stop). `force` bypasses the min-run-time / near-completion guards.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PreemptRequest {
+    pub mode: String,
+    #[serde(default)]
+    pub target_pool_id: Option<Uuid>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub force: bool,
+}
+
 /// Per-group fair-share weight + quotas (PR3). Omit a group to use defaults
 /// (weight 100, no floor, no ceiling, no submit cap).
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -527,6 +558,8 @@ impl Event {
         PoolMemberUpdate,
         DirectoryGrantEntry,
         GroupQuotaEntry,
+        PriorityOverrideRequest,
+        PreemptRequest,
         Problem,
         Event,
         DeviceView,
