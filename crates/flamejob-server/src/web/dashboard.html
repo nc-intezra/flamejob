@@ -374,7 +374,9 @@
             <option value="starttls">StartTLS (tcp/389 → TLS)</option>
             <option value="plaintext">LDAP (plaintext, insecure)</option>
           </select></div>
-        <label class="site-check" id="dirPlainWrap" style="display:none"><input type="checkbox" id="dirPlainAck"> I understand plaintext sends the bind password and user credentials in cleartext</label>
+        <div id="dirPlainWrap" style="display:none;border:1px solid var(--bad);background:rgba(220,70,70,.10);border-radius:8px;padding:9px 11px;margin:2px 0">
+          <div style="color:var(--bad);font-weight:600;margin-bottom:5px">⚠ Plaintext LDAP — insecure</div>
+          <label style="display:block;margin:0;line-height:1.5"><input type="checkbox" id="dirPlainAck" style="vertical-align:-2px;margin-right:6px">I understand the service-bind password and every user's credentials cross the network in <b>cleartext</b>. A hardened domain controller may refuse plain-389 binds anyway; StartTLS reuses port 389 and is the lowest-effort secure option.</label></div>
         <div class="fld"><label>Servers (host or host:port, comma-separated)</label>
           <input id="dirServers" placeholder="dc1.corp.example, dc2.corp.example"></div>
         <label class="site-check"><input type="checkbox" id="dirGc" checked> Query the Global Catalog (3268/3269)</label>
