@@ -18,6 +18,30 @@ use tokio_stream::StreamExt;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use uuid::Uuid;
 
+/// Maximum size of a single file upload accepted by `POST /files`, enforced as
+/// the route's `DefaultBodyLimit` (overriding axum's 2 MB default). The handler
+/// streams the body to disk, so this bounds the request, not memory. Surfaced to
+/// the dashboard (via the injected config) so the ingest pane can gauge each
+/// file against the per-request ceiling before uploading.
+pub const MAX_FILE_UPLOAD_BYTES: usize = 8 * 1024 * 1024 * 1024; // 8 GiB
+
+/// Compact binary-unit byte formatting (GiB/MiB/KiB) for human-facing messages,
+/// matching the dashboard's `fmtBytesBin`.
+fn human_bytes(n: i64) -> String {
+    const GIB: i64 = 1024 * 1024 * 1024;
+    const MIB: i64 = 1024 * 1024;
+    const KIB: i64 = 1024;
+    if n >= GIB {
+        format!("{:.1} GiB", n as f64 / GIB as f64)
+    } else if n >= MIB {
+        format!("{:.1} MiB", n as f64 / MIB as f64)
+    } else if n >= KIB {
+        format!("{:.1} KiB", n as f64 / KIB as f64)
+    } else {
+        format!("{n} B")
+    }
+}
+
 use crate::auth::{self, AuthUser};
 use crate::error::AppError;
 use crate::state::AppState;
@@ -119,8 +143,9 @@ pub fn router(state: AppState) -> Router {
             // (the handler streams the body to disk, so this isn't held in memory).
             get(list_files)
                 .post(upload_file)
-                .layer(DefaultBodyLimit::max(8 * 1024 * 1024 * 1024)),
+                .layer(DefaultBodyLimit::max(MAX_FILE_UPLOAD_BYTES)),
         )
+        .route("/files/usage", get(storage_usage))
         .route("/files/:id", delete(delete_file))
         .route("/events", get(events))
         .route("/admin/users", post(create_user))
@@ -1121,6 +1146,69 @@ async fn list_files(
     ))
 }
 
+/// Disk capacity + free space for the volume that holds `path`, by matching the
+/// deepest mount point that is a prefix of the directory. Returns `(total,
+/// available)` in bytes, or `None` if no mount matched (e.g. an unusual layout).
+fn volume_usage_for(path: &std::path::Path) -> Option<(u64, u64)> {
+    use sysinfo::Disks;
+    // Canonicalize the nearest existing ancestor so the prefix match works even
+    // before the uploads dir has been created.
+    let mut probe = path.to_path_buf();
+    let canon = loop {
+        if let Ok(c) = std::fs::canonicalize(&probe) {
+            break c;
+        }
+        match probe.parent() {
+            Some(p) => probe = p.to_path_buf(),
+            None => break std::path::PathBuf::from("/"),
+        }
+    };
+    let disks = Disks::new_with_refreshed_list();
+    let mut best: Option<(usize, u64, u64)> = None;
+    for d in disks.list() {
+        let mp = d.mount_point();
+        if canon.starts_with(mp) {
+            let len = mp.as_os_str().len();
+            if best.is_none_or(|(bl, _, _)| len > bl) {
+                best = Some((len, d.total_space(), d.available_space()));
+            }
+        }
+    }
+    best.map(|(_, total, avail)| (total, avail))
+}
+
+#[utoipa::path(
+    get, path = "/files/usage", tag = "files", security(("bearer" = [])),
+    responses((status = 200, body = StorageUsageView, description = "Total uploaded-file storage vs quota and disk"))
+)]
+async fn storage_usage(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> Result<Json<StorageUsageView>, AppError> {
+    auth.require(Capability::Ingest)?;
+    let (files_bytes, file_count): (i64, i64) =
+        sqlx::query_as("SELECT COALESCE(SUM(size_bytes), 0)::bigint, COUNT(*)::bigint FROM files")
+            .fetch_one(&state.db)
+            .await?;
+    let uploads = PathBuf::from(&state.cfg.hashcat.data_dir).join("files");
+    let path_str = uploads.display().to_string();
+    // Disk sampling is a blocking syscall sweep; keep it off the async executor.
+    let (disk_total, disk_available) =
+        tokio::task::spawn_blocking(move || volume_usage_for(&uploads))
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or((0, 0));
+    Ok(Json(StorageUsageView {
+        files_bytes,
+        file_count,
+        quota_bytes: state.cfg.hashcat.files_quota_bytes as i64,
+        disk_total_bytes: disk_total as i64,
+        disk_available_bytes: disk_available as i64,
+        path: path_str,
+    }))
+}
+
 #[utoipa::path(
     post, path = "/files", tag = "files", security(("bearer" = [])),
     request_body(content_type = "multipart/form-data", description = "Fields: file (binary), kind (wordlist|rule|mask|other)"),
@@ -1196,6 +1284,26 @@ async fn upload_file(
             return Err(AppError::BadRequest("missing file field".into()));
         }
     };
+    // Enforce the total-storage quota (0 = unlimited): if adding this file would
+    // push the stored corpus past the cap, drop the just-written file and reject.
+    // Checked after streaming because multipart doesn't give the size up front;
+    // the bytes are already on disk, so remove them before returning.
+    let quota = state.cfg.hashcat.files_quota_bytes as i64;
+    if quota > 0 {
+        let used: i64 =
+            sqlx::query_scalar("SELECT COALESCE(SUM(size_bytes), 0)::bigint FROM files")
+                .fetch_one(&state.db)
+                .await?;
+        if used + size_bytes > quota {
+            let _ = tokio::fs::remove_file(&path).await;
+            return Err(AppError::InsufficientStorage(format!(
+                "storage quota exceeded: {} in use + {} would exceed the {} limit",
+                human_bytes(used),
+                human_bytes(size_bytes),
+                human_bytes(quota),
+            )));
+        }
+    }
     let sha256 = hex::encode(hasher.finalize());
     sqlx::query(
         "INSERT INTO files (id, name, kind, path, size_bytes, sha256, uploaded_by) \

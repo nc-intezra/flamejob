@@ -46,6 +46,13 @@ pub struct HashcatCfg {
     pub binary: String,
     pub data_dir: String,
     pub workload: u8,
+    /// Soft cap on the TOTAL size of all uploaded files (wordlists, rules, masks,
+    /// other) in bytes. 0 = unlimited (default). When set, an upload that would
+    /// push the stored total past this ceiling is rejected (HTTP 507). Distinct
+    /// from the per-request body limit (`MAX_FILE_UPLOAD_BYTES`); this bounds the
+    /// cumulative corpus. Surfaced to the dashboard's total-storage gauge.
+    #[serde(default)]
+    pub files_quota_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -179,6 +186,7 @@ impl Default for Config {
                 binary: "/usr/bin/hashcat".into(),
                 data_dir: "/var/lib/flamejob".into(),
                 workload: 3,
+                files_quota_bytes: 0, // unlimited by default
             },
             crypto: CryptoCfg {
                 plaintext_key_file: None,
