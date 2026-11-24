@@ -141,6 +141,28 @@ pub struct FileView {
     pub sha256: String,
 }
 
+/// Total-storage usage for the dashboard's upload-corpus gauge: how much all
+/// uploaded files occupy, against the configured quota (if any) and the physical
+/// volume behind `data_dir/files` for context. `quota_bytes == 0` means no quota
+/// is configured (unlimited); `disk_total_bytes == 0` means the volume couldn't
+/// be sampled.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct StorageUsageView {
+    /// Sum of all uploaded files (wordlists/rules/masks/other), in bytes.
+    pub files_bytes: i64,
+    /// Number of uploaded files.
+    pub file_count: i64,
+    /// Configured total-storage cap in bytes; 0 = unlimited.
+    pub quota_bytes: i64,
+    /// Capacity of the volume holding the uploads directory, in bytes (0 if
+    /// it couldn't be sampled).
+    pub disk_total_bytes: i64,
+    /// Free space on that volume, in bytes.
+    pub disk_available_bytes: i64,
+    /// The uploads directory the figures describe.
+    pub path: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct UserCreate {
     pub username: String,

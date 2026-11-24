@@ -21,6 +21,12 @@ token_ttl_hours = 1
 binary   = "/usr/bin/hashcat"
 data_dir = "/var/lib/flamejob"
 workload = 3
+# Soft cap on the TOTAL size of all uploaded files (wordlists/rules/masks), in
+# bytes. 0 = unlimited (default). When set, an upload that would push the stored
+# total past this is rejected (HTTP 507) and the dashboard storage gauge fills
+# toward it. This is the cumulative-corpus cap; the per-request upload limit is
+# fixed at 8 GiB separately. Example: 500 GiB = 536870912000.
+files_quota_bytes = 0
 
 [crypto]
 # AD-supplied where available, else generated locally by the installer

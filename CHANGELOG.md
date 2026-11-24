@@ -27,6 +27,15 @@ icons.
   upload (it would 413). The limit is surfaced to the dashboard from a single
   source of truth (`MAX_FILE_UPLOAD_BYTES`, injected as `uploadLimit`), so the
   gauge always matches the route. Purely client-side — no extra endpoint.
+- **Total-storage quota + gauge.** A second ingest-pane gauge shows the
+  cumulative size of all uploaded files against a new configurable quota
+  (`[hashcat].files_quota_bytes`, `0` = unlimited), with the physical disk volume
+  behind `data_dir/files` as a secondary context bar. When a quota is set, an
+  upload that would push the stored total past it is rejected with HTTP 507
+  (`insufficient_storage`); the quota bar colour-shifts amber past 75% and red at
+  the cap. New `GET /files/usage` → `StorageUsageView` (files total/count, quota,
+  disk total/free; `Ingest` capability). This is the cumulative-corpus cap,
+  distinct from the fixed 8 GiB per-request upload limit.
 - **OS-aware agent status icons.** Agents now report their operating system
   (`std::env::consts::OS`) on the WebSocket `Hello` frame. The Agents panel shows
   a Linux penguin (Tux) or a four-pane Windows glyph in place of the plain status

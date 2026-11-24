@@ -258,7 +258,14 @@
   .sg-track{position:relative;height:14px;background:var(--track);border-radius:7px;overflow:hidden}
   .sg-fill{position:absolute;top:0;left:0;height:100%;background:var(--good);transition:width .4s ease,background .3s}
   .sg-fill.warn{background:var(--warn)} .sg-fill.bad{background:var(--bad)}
+  .sg-fill.disk{background:var(--accent);opacity:.65}
   .sg-sub{margin-top:4px;font-family:var(--mono);font-size:10px;color:var(--dim)}
+  /* secondary (disk-context) row inside the total-storage gauge */
+  .sg-head2{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin:8px 0 3px}
+  .sg-label2{font-size:9px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim)}
+  .sg-nums2{font-family:var(--mono);font-size:10px;color:var(--dim)}
+  .sg-track-sm{height:8px;border-radius:4px}
+  #totalGauge{border-bottom:1px solid var(--border)}
 
   /* ---- agent OS status icon (replaces the plain status dot) ---- */
   .ag .osicon{width:16px;height:16px;flex:none;display:inline-block;vertical-align:middle}
@@ -690,6 +697,7 @@ async function tick(){
     }
     if(can("view_stats")) renderDevices(await api("/devices"));
     if(can("view_stats")) renderAgents(await api("/agents"));
+    if(can("ingest")) refreshStorage(); // throttled internally (~8s)
     if(can("view_jobs") && S.selected && S.selJob){
       // Archived (history) selections only have cracked plaintext — no live tasks.
       if(S.selIsHist || S.detailView==="cracked") loadCracked(S.selJob.hashlist_id);
@@ -1121,6 +1129,12 @@ function renderIngest(){
   if(b.dataset.built) return; // build once; keep a partly-filled queue across ticks
   b.dataset.built="1";
   b.innerHTML = `
+    <div class="storage-gauge" id="totalGauge" title="Total size of all uploaded files vs the configured quota, with the disk volume for context.">
+      <div class="sg-head"><span class="sg-label">Total upload storage</span><span class="sg-nums" id="tgNums"><span class="dim">reading…</span></span></div>
+      <div class="sg-track"><div class="sg-fill" id="tgFill" style="width:0%"></div></div>
+      <div class="sg-head2"><span class="sg-label2" id="tgDiskLabel">disk</span><span class="sg-nums2" id="tgDiskNums"></span></div>
+      <div class="sg-track sg-track-sm"><div class="sg-fill disk" id="tgDisk" style="width:0%"></div></div>
+    </div>
     <div class="storage-gauge" id="limitGauge" title="Each file uploads in its own request; the /files route caps a request at this size.">
       <div class="sg-head"><span class="sg-label">Per-upload capacity (/files limit)</span><span class="sg-nums" id="lgNums"></span></div>
       <div class="sg-track"><div class="sg-fill" id="lgFill" style="width:0%"></div></div>
@@ -1132,6 +1146,55 @@ function renderIngest(){
     </div>`;
   ingestWire("wordlist"); ingestWire("rule");
   renderLimitGauge();
+  refreshStorage();
+}
+// Total-storage gauge: cumulative size of ALL uploaded files vs the configured
+// quota (`files_quota_bytes`; 0 = unlimited), with the physical disk volume as a
+// secondary context bar. Needs a server call (DB sum + disk sample), so it's
+// throttled on the tick and forced after an upload. Distinct from the per-upload
+// (per-request) gauge above.
+let STORAGE_AT = 0;
+async function refreshStorage(force){
+  const g=document.getElementById("totalGauge");
+  if(!g) return;
+  const now=Date.now();
+  if(!force && now-STORAGE_AT < 8000) return;
+  STORAGE_AT = now;
+  try{
+    const u=await api("/files/usage");
+    const used=+u.files_bytes||0, cnt=+u.file_count||0, quota=+u.quota_bytes||0;
+    const dTot=+u.disk_total_bytes||0, dAvail=+u.disk_available_bytes||0, dUsed=Math.max(0,dTot-dAvail);
+    const fill=document.getElementById("tgFill"), nums=document.getElementById("tgNums");
+    const countTxt = `${cnt} file(s)`;
+    if(quota>0){
+      const pct=Math.min(100, Math.round(used/quota*100));
+      fill.style.width=pct+"%";
+      fill.classList.toggle("warn", pct>=75 && pct<100);
+      fill.classList.toggle("bad", pct>=100);
+      const rem=Math.max(0, quota-used);
+      nums.innerHTML=`<span class="pctbig">${pct}%</span> · ${fmtBytesBin(used)} / ${fmtBytesBin(quota)} <span class="free">· ${fmtBytesBin(rem)} left · ${countTxt}</span>`;
+    } else {
+      // No quota configured — plot uploads against the physical disk instead.
+      const pct = dTot>0 ? Math.min(100, Math.round(used/dTot*100)) : 0;
+      fill.style.width=pct+"%";
+      fill.classList.remove("warn","bad");
+      nums.innerHTML=`<span class="pctbig">${fmtBytesBin(used)}</span> used <span class="free">· no quota set (bounded by disk) · ${countTxt}</span>`;
+    }
+    // Secondary disk-context bar.
+    const dwrapHead=document.getElementById("tgDiskLabel").parentElement;
+    const dwrapTrack=document.getElementById("tgDisk").parentElement;
+    if(dTot>0){
+      dwrapHead.style.display=""; dwrapTrack.style.display="";
+      const dpct=Math.min(100, Math.round(dUsed/dTot*100));
+      document.getElementById("tgDisk").style.width=dpct+"%";
+      document.getElementById("tgDiskLabel").textContent = quota>0 ? "disk volume (context)" : "disk volume";
+      document.getElementById("tgDiskNums").textContent = `${dpct}% · ${fmtBytesBin(dUsed)} / ${fmtBytesBin(dTot)} · ${fmtBytesBin(dAvail)} free`;
+    } else {
+      dwrapHead.style.display="none"; dwrapTrack.style.display="none";
+    }
+  }catch(e){
+    const nums=document.getElementById("tgNums"); if(nums) nums.innerHTML=`<span class="dim">usage unavailable</span>`;
+  }
 }
 // Gauge of the /files route's per-request ceiling (DefaultBodyLimit, surfaced as
 // CFG.uploadLimit). Each file uploads in its own request, so the binding number
@@ -1250,6 +1313,7 @@ async function ingestUploadAll(kind){
   st.busy=false; ingestRender(kind);
   // Surface the new files in the Submit-a-job pickers immediately.
   if(document.getElementById("wordlist")) loadFileOptions();
+  refreshStorage(true); // total corpus changed — refresh the storage gauge now
   const ok=st.files.filter(x=>x.status==="ok").length, bad=st.files.filter(x=>x.status==="err").length;
   flash(`${kind}s: ${ok} uploaded${bad?`, ${bad} failed`:""}`, bad>0);
 }
