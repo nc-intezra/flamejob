@@ -18,6 +18,13 @@ use tokio_stream::StreamExt;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use uuid::Uuid;
 
+/// Maximum size of a single file upload accepted by `POST /files`, enforced as
+/// the route's `DefaultBodyLimit` (overriding axum's 2 MB default). The handler
+/// streams the body to disk, so this bounds the request, not memory. Surfaced to
+/// the dashboard (via the injected config) so the ingest pane can gauge each
+/// file against the per-request ceiling before uploading.
+pub const MAX_FILE_UPLOAD_BYTES: usize = 8 * 1024 * 1024 * 1024; // 8 GiB
+
 use crate::auth::{self, AuthUser};
 use crate::error::AppError;
 use crate::state::AppState;
@@ -62,9 +69,8 @@ pub fn router(state: AppState) -> Router {
             // (the handler streams the body to disk, so this isn't held in memory).
             get(list_files)
                 .post(upload_file)
-                .layer(DefaultBodyLimit::max(8 * 1024 * 1024 * 1024)),
+                .layer(DefaultBodyLimit::max(MAX_FILE_UPLOAD_BYTES)),
         )
-        .route("/files/usage", get(storage_usage))
         .route("/files/:id", delete(delete_file))
         .route("/events", get(events))
         .route("/admin/users", post(create_user))
@@ -1017,71 +1023,6 @@ async fn list_files(
             })
             .collect(),
     ))
-}
-
-/// Disk capacity + free space for the volume that holds `path`, by matching the
-/// deepest mount point that is a prefix of the directory. Returns `(total,
-/// available)` in bytes, or `None` if no mount matched (e.g. an unusual layout).
-fn volume_usage_for(path: &std::path::Path) -> Option<(u64, u64)> {
-    use sysinfo::Disks;
-    // Canonicalize the nearest existing ancestor so the prefix match works even
-    // before the uploads dir has been created.
-    let mut probe = path.to_path_buf();
-    let canon = loop {
-        if let Ok(c) = std::fs::canonicalize(&probe) {
-            break c;
-        }
-        match probe.parent() {
-            Some(p) => probe = p.to_path_buf(),
-            None => break std::path::PathBuf::from("/"),
-        }
-    };
-    let disks = Disks::new_with_refreshed_list();
-    let mut best: Option<(usize, u64, u64)> = None;
-    for d in disks.list() {
-        let mp = d.mount_point();
-        if canon.starts_with(mp) {
-            let len = mp.as_os_str().len();
-            if best.is_none_or(|(bl, _, _)| len > bl) {
-                best = Some((len, d.total_space(), d.available_space()));
-            }
-        }
-    }
-    best.map(|(_, total, avail)| (total, avail))
-}
-
-#[utoipa::path(
-    get, path = "/files/usage", tag = "files", security(("bearer" = [])),
-    responses((status = 200, body = StorageUsageView, description = "Fullness of the uploads volume"))
-)]
-async fn storage_usage(
-    State(state): State<AppState>,
-    auth: AuthUser,
-) -> Result<Json<StorageUsageView>, AppError> {
-    auth.require(Capability::Ingest)?;
-    let uploads = PathBuf::from(&state.cfg.hashcat.data_dir).join("files");
-    let path_str = uploads.display().to_string();
-    // Disk sampling is a blocking syscall sweep; keep it off the async executor.
-    let probe = uploads.clone();
-    let (total, available) = tokio::task::spawn_blocking(move || volume_usage_for(&probe))
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or((0, 0));
-    let (files_bytes, file_count): (i64, i64) =
-        sqlx::query_as("SELECT COALESCE(SUM(size_bytes), 0)::bigint, COUNT(*)::bigint FROM files")
-            .fetch_one(&state.db)
-            .await?;
-    let total = total as i64;
-    let available = available as i64;
-    Ok(Json(StorageUsageView {
-        total_bytes: total,
-        used_bytes: (total - available).max(0),
-        available_bytes: available,
-        files_bytes,
-        file_count,
-        path: path_str,
-    }))
 }
 
 #[utoipa::path(

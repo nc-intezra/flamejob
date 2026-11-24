@@ -18,12 +18,15 @@ icons.
   memory. Uploaded files appear immediately in the *Submit a job* wordlist/rule
   pickers. Visible to **superadmin, admin, and operator** (the `Ingest`
   capability).
-- **Endpoint-storage gauge.** The ingest panel shows a horizontal gauge of how
-  full the volume behind the file endpoint (`data_dir/files`) is — used / total /
-  free with a percentage, colour-shifting amber at 75% and red at 90%, plus
-  flamejob's own footprint drawn as a distinct segment and summarised below. New
-  `GET /files/usage` (volume figures from `sysinfo`; `Ingest` capability). The
-  gauge refreshes after each upload so you can see a large wordlist land.
+- **Per-upload capacity gauge.** The ingest panel shows a horizontal gauge of the
+  remaining capacity of the `/files` route's per-request limit (its
+  `DefaultBodyLimit`, 8 GiB). Because each file uploads in its own request, the
+  gauge plots the largest queued file against the ceiling and reports the
+  headroom, colour-shifting amber past 75% and red at/over the limit. A file at or
+  over the limit is flagged **too big** the moment it's queued and skipped on
+  upload (it would 413). The limit is surfaced to the dashboard from a single
+  source of truth (`MAX_FILE_UPLOAD_BYTES`, injected as `uploadLimit`), so the
+  gauge always matches the route. Purely client-side — no extra endpoint.
 - **OS-aware agent status icons.** Agents now report their operating system
   (`std::env::consts::OS`) on the WebSocket `Hello` frame. The Agents panel shows
   a Linux penguin (Tux) or a four-pane Windows glyph in place of the plain status

@@ -60,7 +60,6 @@ impl Modify for SecurityAddon {
         crate::routes::list_cracked,
         crate::routes::import_hashes,
         crate::routes::list_files,
-        crate::routes::storage_usage,
         crate::routes::upload_file,
         crate::routes::delete_file,
         crate::routes::events,

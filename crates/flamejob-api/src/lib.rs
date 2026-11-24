@@ -141,26 +141,6 @@ pub struct FileView {
     pub sha256: String,
 }
 
-/// Fullness of the storage volume backing the file endpoint (`data_dir/files`),
-/// for the dashboard's ingest gauge. Volume figures come from the filesystem the
-/// uploads directory lives on; `files_bytes`/`file_count` are flamejob's own
-/// uploaded corpus. `total_bytes == 0` means the volume couldn't be sampled.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct StorageUsageView {
-    /// Capacity of the volume holding the uploads directory, in bytes.
-    pub total_bytes: i64,
-    /// Used space on that volume (`total - available`), in bytes.
-    pub used_bytes: i64,
-    /// Free space on that volume, in bytes.
-    pub available_bytes: i64,
-    /// Sum of flamejob's uploaded files (wordlists/rules/masks/other), in bytes.
-    pub files_bytes: i64,
-    /// Number of uploaded files flamejob is tracking.
-    pub file_count: i64,
-    /// The uploads directory the figures describe.
-    pub path: String,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct UserCreate {
     pub username: String,

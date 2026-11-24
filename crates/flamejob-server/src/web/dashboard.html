@@ -242,23 +242,22 @@
   .filelist li .st{flex:0 0 auto;font-size:10px;text-transform:uppercase;letter-spacing:.04em}
   .filelist li.ok .st{color:var(--good)} .filelist li.err .st{color:var(--bad)}
   .filelist li.up .st{color:var(--accent)} .filelist li.wait .st{color:var(--dim)}
+  .filelist li.toobig{border-color:var(--bad)} .filelist li.toobig .st{color:var(--bad)} .filelist li.toobig .sz{color:var(--bad)}
   .filelist li .mini{flex:0 0 64px;height:5px;background:var(--track);border-radius:3px;overflow:hidden}
   .filelist li .mini>i{display:block;height:100%;width:0;background:var(--accent);transition:width .2s ease}
   .filelist li .rm{flex:0 0 auto;cursor:pointer;color:var(--dim);border:none;background:none;font-size:14px;line-height:1;padding:0 2px}
   .filelist li .rm:hover{color:var(--bad)}
 
-  /* ---- endpoint-storage gauge (ingest pane) ---- */
+  /* ---- per-upload capacity gauge (ingest pane): largest queued file vs the
+     /files route's per-request DefaultBodyLimit ---- */
   .storage-gauge{padding:2px 12px 12px}
   .sg-head{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:5px}
   .sg-label{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim)}
   .sg-nums{font-family:var(--mono);font-size:11px;color:var(--ink)}
   .sg-nums .pctbig{font-weight:700} .sg-nums .free{color:var(--dim)}
   .sg-track{position:relative;height:14px;background:var(--track);border-radius:7px;overflow:hidden}
-  /* Layered left-to-right: total used (fullness colour), then flamejob's own
-     slice drawn on top at the left so it reads as a distinct segment. */
   .sg-fill{position:absolute;top:0;left:0;height:100%;background:var(--good);transition:width .4s ease,background .3s}
   .sg-fill.warn{background:var(--warn)} .sg-fill.bad{background:var(--bad)}
-  .sg-fj{position:absolute;top:0;left:0;height:100%;background:var(--accent);transition:width .4s ease}
   .sg-sub{margin-top:4px;font-family:var(--mono);font-size:10px;color:var(--dim)}
 
   /* ---- agent OS status icon (replaces the plain status dot) ---- */
@@ -493,7 +492,7 @@
 
 <script>
 "use strict";
-const CFG = Object.assign({apiBase:null, apiPort:8443, theme:"dark", version:""}, "__FJCFG__");
+const CFG = Object.assign({apiBase:null, apiPort:8443, theme:"dark", version:"", uploadLimit:8589934592}, "__FJCFG__");
 // Build version, centred in the footer (injected by the server from CARGO_PKG_VERSION).
 document.getElementById("verTag").textContent = CFG.version ? ("v"+CFG.version) : "";
 
@@ -691,7 +690,6 @@ async function tick(){
     }
     if(can("view_stats")) renderDevices(await api("/devices"));
     if(can("view_stats")) renderAgents(await api("/agents"));
-    if(can("ingest")) refreshStorage(); // throttled internally (~8s)
     if(can("view_jobs") && S.selected && S.selJob){
       // Archived (history) selections only have cracked plaintext — no live tasks.
       if(S.selIsHist || S.detailView==="cracked") loadCracked(S.selJob.hashlist_id);
@@ -1123,48 +1121,57 @@ function renderIngest(){
   if(b.dataset.built) return; // build once; keep a partly-filled queue across ticks
   b.dataset.built="1";
   b.innerHTML = `
-    <div class="storage-gauge" id="storageGauge" title="Fullness of the volume backing the file endpoint">
-      <div class="sg-head"><span class="sg-label">Endpoint storage</span><span class="sg-nums" id="sgNums"><span class="dim">reading…</span></span></div>
-      <div class="sg-track"><div class="sg-fill" id="sgFill" style="width:0%"></div><div class="sg-fj" id="sgFj" style="width:0%"></div></div>
-      <div class="sg-sub" id="sgSub"></div>
+    <div class="storage-gauge" id="limitGauge" title="Each file uploads in its own request; the /files route caps a request at this size.">
+      <div class="sg-head"><span class="sg-label">Per-upload capacity (/files limit)</span><span class="sg-nums" id="lgNums"></span></div>
+      <div class="sg-track"><div class="sg-fill" id="lgFill" style="width:0%"></div></div>
+      <div class="sg-sub" id="lgSub"></div>
     </div>
     <div class="ingest-grid">
       ${ingestColHTML("wordlist","Wordlists","drop .txt / .lst / .dict / .gz — or any file")}
       ${ingestColHTML("rule","Rules","drop hashcat .rule lists")}
     </div>`;
   ingestWire("wordlist"); ingestWire("rule");
-  refreshStorage();
+  renderLimitGauge();
 }
-// Fetch + render the endpoint-storage gauge. Throttled so the periodic tick
-// doesn't hammer the disk-stat syscall sweep; forced after an upload.
-let STORAGE_AT = 0;
-async function refreshStorage(force){
-  const gauge=document.getElementById("storageGauge");
+// Gauge of the /files route's per-request ceiling (DefaultBodyLimit, surfaced as
+// CFG.uploadLimit). Each file uploads in its own request, so the binding number
+// is the LARGEST file currently queued: the bar plots it against the limit and
+// the readout shows the remaining headroom. A file at/over the limit is drawn
+// red — it would be rejected (413) — and is flagged + skipped at queue time too.
+// Pure client-side: file sizes + a known constant, no server round-trip.
+function uploadLimitBytes(){ const n=+CFG.uploadLimit; return (n>0)?n:8589934592; }
+function renderLimitGauge(){
+  const gauge=document.getElementById("limitGauge");
   if(!gauge) return;
-  const now=Date.now();
-  if(!force && now-STORAGE_AT < 8000) return;
-  STORAGE_AT = now;
-  try{
-    const u=await api("/files/usage");
-    const total=+u.total_bytes||0, used=+u.used_bytes||0, fj=+u.files_bytes||0, avail=+u.available_bytes||0;
-    const nums=document.getElementById("sgNums"), fill=document.getElementById("sgFill"), fjel=document.getElementById("sgFj"), sub=document.getElementById("sgSub");
-    if(total>0){
-      const pct=Math.min(100, Math.round(used/total*100));
-      const fjPct=Math.min(100, used>0?(fj/total*100):0);
-      fill.style.width=pct+"%";
-      fill.classList.toggle("warn", pct>=75 && pct<90);
-      fill.classList.toggle("bad", pct>=90);
-      fjel.style.width=fjPct.toFixed(1)+"%";
-      nums.innerHTML=`<span class="pctbig">${pct}%</span> · ${fmtBytes(used)} / ${fmtBytes(total)} <span class="free">· ${fmtBytes(avail)} free</span>`;
-      sub.textContent=`flamejob: ${fmtBytes(fj)} across ${u.file_count} file(s)`;
-    } else {
-      // Volume couldn't be sampled; still show what flamejob itself holds.
-      fill.style.width="0%"; fjel.style.width="0%";
-      nums.innerHTML=`<span class="dim">volume capacity unavailable</span>`;
-      sub.textContent=`flamejob: ${fmtBytes(fj)} across ${u.file_count} file(s)`;
+  const L=uploadLimitBytes();
+  const fill=document.getElementById("lgFill"), nums=document.getElementById("lgNums"), sub=document.getElementById("lgSub");
+  // Largest file across both queues that still has to go over the wire.
+  let biggest=0, biggestName="", nActive=0, nOver=0;
+  for(const kind of ["wordlist","rule"]){
+    for(const it of INGEST[kind].files){
+      if(it.status==="ok") continue;
+      nActive++;
+      if(it.file.size>=L) nOver++;
+      if(it.file.size>biggest){ biggest=it.file.size; biggestName=it.file.name; }
     }
-  }catch(e){
-    const nums=document.getElementById("sgNums"); if(nums) nums.innerHTML=`<span class="dim">usage unavailable</span>`;
+  }
+  const pct=Math.min(100, Math.round(biggest/L*100));
+  const over=biggest>=L;
+  fill.style.width=pct+"%";
+  fill.classList.toggle("warn", !over && pct>=75);
+  fill.classList.toggle("bad", over);
+  if(biggest>0){
+    const headroom=L-biggest;
+    nums.innerHTML = over
+      ? `<span class="pctbig" style="color:var(--bad)">over limit</span> · ${fmtBytesBin(biggest)} / ${fmtBytesBin(L)}`
+      : `<span class="pctbig">${pct}%</span> · ${fmtBytesBin(biggest)} / ${fmtBytesBin(L)} <span class="free">· ${fmtBytesBin(headroom)} headroom</span>`;
+    const over1 = nOver===1 ? "1 file exceeds the limit — it will be rejected"
+                 : nOver>1 ? `${nOver} files exceed the limit — they will be rejected` : "";
+    sub.innerHTML = `largest of ${nActive} queued: ${esc(biggestName)}` + (over1?` · <span style="color:var(--bad)">${over1}</span>`:"");
+  } else {
+    fill.style.width="0%";
+    nums.innerHTML = `<span class="pctbig">0%</span> · ${fmtBytesBin(L)} free per upload`;
+    sub.textContent = `no files queued · each request may carry up to ${fmtBytesBin(L)}`;
   }
 }
 function ingestColHTML(kind, title, hint){
@@ -1191,11 +1198,14 @@ function ingestWire(kind){
   document.getElementById("clr-"+kind).onclick=()=>{ if(INGEST[kind].busy) return; INGEST[kind].files=[]; ingestRender(kind); };
 }
 function ingestAdd(kind, fileList){
-  const st=INGEST[kind];
+  const st=INGEST[kind], L=uploadLimitBytes();
   for(const f of fileList){
     // De-dupe by name+size so a double-drop (or re-pick) doesn't queue twice.
     if(st.files.some(x=>x.file.name===f.name && x.file.size===f.size && x.status!=="err")) continue;
-    st.files.push({file:f, status:"wait", pct:0, msg:""});
+    // Flag a file that can't fit the /files per-request limit up front, so it's
+    // never sent (the server would 413 it); it still shows in the gauge.
+    const over=f.size>=L;
+    st.files.push({file:f, status:over?"toobig":"wait", pct:0, msg:over?`exceeds the ${fmtBytesBin(L)} per-request limit`:""});
   }
   ingestRender(kind);
 }
@@ -1203,21 +1213,23 @@ function ingestRender(kind){
   const st=INGEST[kind], list=document.getElementById("list-"+kind);
   if(!list) return;
   list.innerHTML = st.files.map((it,i)=>{
-    const label = {wait:"queued",up:it.pct+"%",ok:"done",err:"failed"}[it.status]||"";
+    const label = {wait:"queued",up:it.pct+"%",ok:"done",err:"failed",toobig:"too big"}[it.status]||"";
     const prog = it.status==="up" ? `<span class="mini"><i style="width:${it.pct}%"></i></span>` : "";
     const rm = it.status==="up" ? "" : `<button class="rm" title="remove" data-i="${i}">✕</button>`;
     return `<li class="${it.status}"><span class="fn" title="${esc(it.file.name)}${it.msg?" — "+esc(it.msg):""}">${esc(it.file.name)}</span>`+
-      `<span class="sz">${fmtBytes(it.file.size)}</span>${prog}<span class="st">${esc(label)}</span>${rm}</li>`;
+      `<span class="sz">${fmtBytesBin(it.file.size)}</span>${prog}<span class="st">${esc(label)}</span>${rm}</li>`;
   }).join("");
   [...list.querySelectorAll(".rm")].forEach(btn=>btn.onclick=()=>{
     if(st.busy) return; st.files.splice(+btn.getAttribute("data-i"),1); ingestRender(kind);
   });
   const pending = st.files.filter(x=>x.status==="wait"||x.status==="err").length;
   const done = st.files.filter(x=>x.status==="ok").length;
+  const over = st.files.filter(x=>x.status==="toobig").length;
   document.getElementById("up-"+kind).disabled  = st.busy || pending===0;
   document.getElementById("clr-"+kind).disabled = st.busy || st.files.length===0;
   const sum=document.getElementById("sum-"+kind);
-  if(st.files.length) sum.textContent = `${st.files.length} file(s) · ${done} done · ${pending} pending`;
+  if(st.files.length) sum.textContent = `${st.files.length} file(s) · ${done} done · ${pending} pending`+(over?` · ${over} too big`:"");
+  renderLimitGauge(); // the queue changed → refresh the per-request-capacity gauge
 }
 async function ingestUploadAll(kind){
   const st=INGEST[kind];
@@ -1225,6 +1237,7 @@ async function ingestUploadAll(kind){
   st.busy=true; ingestRender(kind);
   for(const it of st.files){
     if(it.status==="ok") continue;
+    if(it.status==="toobig") continue; // over the /files per-request limit — never sent
     it.status="up"; it.pct=0; it.msg=""; ingestRender(kind);
     try{
       await uploadFileXHR(it.file, kind, p=>{ it.pct=Math.round(p*100); ingestRender(kind); });
@@ -1237,7 +1250,6 @@ async function ingestUploadAll(kind){
   st.busy=false; ingestRender(kind);
   // Surface the new files in the Submit-a-job pickers immediately.
   if(document.getElementById("wordlist")) loadFileOptions();
-  refreshStorage(true); // force — the gauge should reflect the just-uploaded bytes
   const ok=st.files.filter(x=>x.status==="ok").length, bad=st.files.filter(x=>x.status==="err").length;
   flash(`${kind}s: ${ok} uploaded${bad?`, ${bad} failed`:""}`, bad>0);
 }
@@ -1268,6 +1280,11 @@ function uploadFileXHR(file, kind, onProgress){
 function fmtBytes(n){ n=+n||0;
   if(n>=1e9)return (n/1e9).toFixed(1)+" GB"; if(n>=1e6)return (n/1e6).toFixed(1)+" MB";
   if(n>=1e3)return (n/1e3).toFixed(1)+" kB"; return n+" B"; }
+// Binary units (GiB/MiB/KiB) for the ingest pane, so file sizes and the
+// per-request limit read against the same 2^30 scale the 8 GiB cap is set in.
+function fmtBytesBin(n){ n=+n||0;
+  if(n>=1073741824)return (n/1073741824).toFixed(1)+" GiB"; if(n>=1048576)return (n/1048576).toFixed(1)+" MiB";
+  if(n>=1024)return (n/1024).toFixed(1)+" KiB"; return n+" B"; }
 async function submitJob(){
   const out=document.getElementById("submitOut"); out.style.color="var(--bad)";
   if(!SUBMIT_FILE.text){ out.textContent="Choose a hash file first."; return; }
