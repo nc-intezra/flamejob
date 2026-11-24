@@ -4,6 +4,35 @@ All notable changes to flamejob are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-11-24
+
+Per-theme dashboard **structure**. v2.1 made the three design themes a recolor;
+v2.2 gives each one the layout behaviour its design calls for, while the classic
+Dark, Light, and OLED themes keep the plain dashboard exactly as before. All new
+behaviour is gated on `html[data-theme=…]` (CSS) and a `curTheme()` check (JS),
+so switching themes rearranges structure live with no reload.
+
+### Added
+- **Mission Control — exception strip.** A six-tile KPI header (running, queued,
+  fleet + hottest device, total hashrate, cracked, agents online) with the fleet
+  tile bordered amber/red past 75°/85°C, above a derived alarm list that promotes
+  over-temp devices, exhausted jobs, offline agents, and queue depth, sorted by
+  priority. Nominal state shows a single "all nominal" line.
+- **Tufte Dense — sparklines & small multiples.** Client-side history ring
+  buffers (48 samples, filled from the 3 s poll) drive word-sized sparklines in
+  each job's progress cell and each device's temp/util cells, plus a
+  small-multiples fleet strip (large current temperature + trend per GPU) above
+  the device table. Denser row padding throughout.
+- **Workbench — tiling & command palette.** Two-pane regions gain a draggable
+  gutter (widths persisted to `localStorage`); double-clicking a panel head zooms
+  it solo and back. A ⌘K / Ctrl-K command palette (available in every theme)
+  offers fuzzy nav, refresh, group-by-host toggle, theme switches, and jump-to-job
+  with arrow/enter navigation.
+
+### Changed
+- `applyTheme()` now re-runs the structural renderers on every theme switch, so
+  Mission/Tufte/Workbench structure appears and disappears without a reload.
+
 ## [2.1.0] - 2026-11-24
 
 Selectable dashboard themes. The dashboard now ships three design themes —
