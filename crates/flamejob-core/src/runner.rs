@@ -22,6 +22,11 @@ pub struct RunnerTask {
     /// When set, this chunk may only run on the agent with this id (a job pinned
     /// to a specific agent). `None` means any free agent. Ignored by LocalRunner.
     pub pinned_agent_id: Option<Uuid>,
+    /// Pool eligibility (v2.0): when `Some`, this chunk may only run on an agent
+    /// whose id is in this set (the members of the pools the job's owner's groups
+    /// are granted). `None` means unrestricted (no pool enforcement). Intersected
+    /// with `pinned_agent_id` when both are set. Ignored by LocalRunner.
+    pub allowed_agents: Option<Vec<Uuid>>,
 }
 
 /// Per-compute-device speed, as reported in hashcat's `--status-json` `devices`

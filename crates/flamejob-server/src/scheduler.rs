@@ -439,6 +439,7 @@ impl Scheduler {
             keyspace_len: 0,
             extra_args: cfg.extra_args.clone(),
             pinned_agent_id: None, // keyspace probe: any agent may answer
+            allowed_agents: None,  // probe is metadata-only; pool-blind by design
         };
         let total_keyspace = self
             .runner
@@ -456,6 +457,30 @@ impl Scheduler {
             extra_args: cfg.extra_args,
             total_keyspace,
         })
+    }
+
+    /// The agent-id allow-set for a job, re-derived live from its snapshotted
+    /// eligible pools. `None` = unrestricted (empty `eligible_pool_ids`, i.e. a
+    /// local/unpooled job). `Some(set)` = members of those pools right now (may
+    /// be empty, in which case the chunk waits for an authorized agent).
+    async fn eligible_agents_for(&self, job_id: Uuid) -> Option<Vec<Uuid>> {
+        let pools: Vec<Uuid> =
+            sqlx::query_scalar("SELECT eligible_pool_ids FROM jobs WHERE id = $1")
+                .bind(job_id)
+                .fetch_one(&self.state.db)
+                .await
+                .unwrap_or_default();
+        if pools.is_empty() {
+            return None;
+        }
+        let agents: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT DISTINCT agent_id FROM agent_pool_members WHERE pool_id = ANY($1)",
+        )
+        .bind(&pools)
+        .fetch_all(&self.state.db)
+        .await
+        .unwrap_or_default();
+        Some(agents)
     }
 
     async fn next_pending_chunk(&self, job_id: Uuid) -> Option<(Uuid, i64, i64)> {
@@ -490,6 +515,10 @@ impl Scheduler {
                 .fetch_one(&self.state.db)
                 .await
                 .unwrap_or(None);
+        // Re-derive pool eligibility live at dispatch, so revoking a grant or
+        // moving an agent out of a pool takes effect on the next chunk. Empty
+        // `eligible_pool_ids` (local/unrestricted job) => None (any agent).
+        let allowed_agents = self.eligible_agents_for(job_id).await;
         let task = RunnerTask {
             task_id,
             hash_type: inputs.hash_type,
@@ -501,6 +530,7 @@ impl Scheduler {
             keyspace_len: len,
             extra_args: inputs.extra_args.clone(),
             pinned_agent_id,
+            allowed_agents,
         };
         // Mark running before dispatch so the next fill iteration won't re-pick it.
         let _ = self.set_task(task_id, "running").await;

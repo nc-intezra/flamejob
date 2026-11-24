@@ -11,8 +11,9 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use flamejob_api::{
-    DirectoryConfigUpdate, DirectoryConfigView, DirectoryRoleMapEntry, DirectoryTestLoginRequest,
-    DirectoryTestLoginResult, DirectoryTestRequest, DirectoryTestResult, DirectoryTestStep,
+    DirectoryConfigUpdate, DirectoryConfigView, DirectoryGrantEntry, DirectoryRoleMapEntry,
+    DirectoryTestLoginRequest, DirectoryTestLoginResult, DirectoryTestRequest, DirectoryTestResult,
+    DirectoryTestStep,
 };
 use flamejob_core::{Capability, Role};
 
@@ -524,6 +525,22 @@ pub async fn try_directory_login(
             .execute(&mut *tx)
             .await?;
     }
+    // Cache the resolved group SIDs so job submission / scheduling can resolve
+    // pool eligibility (PR2) without re-querying the directory each time.
+    sqlx::query("DELETE FROM user_dir_groups WHERE user_id = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    for sid in &user.group_sids {
+        sqlx::query(
+            "INSERT INTO user_dir_groups (user_id, group_sid) VALUES ($1, $2) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(id)
+        .bind(sid)
+        .execute(&mut *tx)
+        .await?;
+    }
     tx.commit().await?;
 
     audit(
@@ -535,4 +552,89 @@ pub async fn try_directory_login(
     )
     .await;
     Ok(Some((id, roles)))
+}
+
+// ---- directory group -> pool grants (ManageDirectory) ----
+
+#[utoipa::path(
+    get, path = "/admin/directory/grants", tag = "directory", security(("bearer" = [])),
+    responses((status = 200, body = [DirectoryGrantEntry]), (status = 403, description = "Missing ViewDirectoryConfig"))
+)]
+pub async fn list_grants(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> Result<Json<Vec<DirectoryGrantEntry>>, AppError> {
+    auth.require(Capability::ViewDirectoryConfig)?;
+    let rows: Vec<(String, Uuid, String)> = sqlx::query_as(
+        "SELECT g.group_sid, g.pool_id, p.name FROM directory_agent_grants g \
+         JOIN agent_pools p ON p.id = g.pool_id ORDER BY g.group_sid, p.name",
+    )
+    .fetch_all(&state.db)
+    .await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|(group_sid, pool_id, pool_name)| DirectoryGrantEntry {
+                group_sid,
+                pool_id,
+                pool_name: Some(pool_name),
+                group_cn: None,
+            })
+            .collect(),
+    ))
+}
+
+#[utoipa::path(
+    post, path = "/admin/directory/grants", tag = "directory", security(("bearer" = [])),
+    request_body = DirectoryGrantEntry,
+    responses((status = 200, description = "Granted"), (status = 403, description = "Missing ManageDirectory"))
+)]
+pub async fn add_grant(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Json(entry): Json<DirectoryGrantEntry>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    auth.require(Capability::ManageDirectory)?;
+    let sid = entry.group_sid.trim();
+    if sid.is_empty() {
+        return Err(AppError::BadRequest("group_sid is required".into()));
+    }
+    sqlx::query(
+        "INSERT INTO directory_agent_grants (group_sid, pool_id, created_by) VALUES ($1, $2, $3) \
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(sid)
+    .bind(entry.pool_id)
+    .bind(auth.id)
+    .execute(&state.db)
+    .await
+    .map_err(|_| AppError::BadRequest("unknown pool".into()))?;
+    audit(&state, Some(auth.id), "directory.grant.add", "ok", sid).await;
+    Ok(Json(serde_json::json!({ "granted": true })))
+}
+
+#[utoipa::path(
+    delete, path = "/admin/directory/grants", tag = "directory", security(("bearer" = [])),
+    request_body = DirectoryGrantEntry,
+    responses((status = 200, description = "Revoked"), (status = 403, description = "Missing ManageDirectory"))
+)]
+pub async fn remove_grant(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Json(entry): Json<DirectoryGrantEntry>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    auth.require(Capability::ManageDirectory)?;
+    sqlx::query("DELETE FROM directory_agent_grants WHERE group_sid = $1 AND pool_id = $2")
+        .bind(entry.group_sid.trim())
+        .bind(entry.pool_id)
+        .execute(&state.db)
+        .await?;
+    audit(
+        &state,
+        Some(auth.id),
+        "directory.grant.remove",
+        "ok",
+        entry.group_sid.trim(),
+    )
+    .await;
+    Ok(Json(serde_json::json!({ "revoked": true })))
 }

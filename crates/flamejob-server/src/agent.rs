@@ -65,6 +65,26 @@ struct QueuedTask {
     task: AgentTask,
     /// When set, this chunk may only be assigned to this agent.
     pinned_agent_id: Option<Uuid>,
+    /// Pool eligibility (v2.0): when `Some`, only agents in this set may run this
+    /// chunk. `None` = unrestricted. Intersected with `pinned_agent_id`.
+    allowed_agents: Option<Vec<Uuid>>,
+}
+
+/// Whether an agent is eligible for a queued task under its pin + pool rules.
+fn agent_eligible(
+    agent_id: Uuid,
+    pinned_agent_id: Option<Uuid>,
+    allowed_agents: Option<&Vec<Uuid>>,
+) -> bool {
+    if let Some(pin) = pinned_agent_id {
+        if pin != agent_id {
+            return false;
+        }
+    }
+    match allowed_agents {
+        Some(set) => set.contains(&agent_id),
+        None => true,
+    }
 }
 
 struct Conn {
@@ -164,12 +184,19 @@ impl AgentHub {
     }
 
     /// Queue (and if possible immediately assign) a chunk task.
-    async fn dispatch(&self, task: AgentTask, pinned_agent_id: Option<Uuid>, sink: StatusSink) {
+    async fn dispatch(
+        &self,
+        task: AgentTask,
+        pinned_agent_id: Option<Uuid>,
+        allowed_agents: Option<Vec<Uuid>>,
+        sink: StatusSink,
+    ) {
         let mut g = self.inner.lock().await;
         g.sinks.insert(task.task_id, sink);
         g.queue.push_back(QueuedTask {
             task,
             pinned_agent_id,
+            allowed_agents,
         });
         Self::drain(&mut g);
     }
@@ -180,11 +207,15 @@ impl AgentHub {
     fn drain(g: &mut HubInner) {
         let mut i = 0;
         while i < g.queue.len() {
-            // Pick an eligible free agent: the pinned one, or any free agent.
-            let agent_id = match g.queue[i].pinned_agent_id {
-                Some(pin) => g.conns.get(&pin).filter(|c| c.slots > 0).map(|_| pin),
-                None => g.conns.iter().find(|(_, c)| c.slots > 0).map(|(&a, _)| a),
-            };
+            // Pick an eligible free agent honoring both the pin and the pool
+            // allow-set. A pinned agent must also be in the allow-set (if any).
+            let pinned_agent_id = g.queue[i].pinned_agent_id;
+            let allowed = g.queue[i].allowed_agents.clone();
+            let agent_id = g
+                .conns
+                .iter()
+                .find(|(&a, c)| c.slots > 0 && agent_eligible(a, pinned_agent_id, allowed.as_ref()))
+                .map(|(&a, _)| a);
             let Some(agent_id) = agent_id else {
                 i += 1; // nothing free for this task right now; leave it queued
                 continue;
@@ -359,10 +390,15 @@ impl Runner for RemoteRunner {
     async fn start(&self, task: &RunnerTask, tx: StatusSink) -> CoreResult<RunHandle> {
         let at = self.to_agent_task(task).await;
         let task_id = task.task_id;
-        self.hub.dispatch(at, task.pinned_agent_id, tx).await;
-        match task.pinned_agent_id {
-            Some(agent) => tracing::info!(%task_id, %agent, "chunk dispatched (pinned agent)"),
-            None => tracing::info!(%task_id, "chunk dispatched to agent pool"),
+        self.hub
+            .dispatch(at, task.pinned_agent_id, task.allowed_agents.clone(), tx)
+            .await;
+        match (task.pinned_agent_id, task.allowed_agents.as_ref()) {
+            (Some(agent), _) => tracing::info!(%task_id, %agent, "chunk dispatched (pinned agent)"),
+            (None, Some(set)) => {
+                tracing::info!(%task_id, pools_agents = set.len(), "chunk dispatched (pool-restricted)")
+            }
+            (None, None) => tracing::info!(%task_id, "chunk dispatched to agent pool"),
         }
         Ok(RunHandle { task_id })
     }
@@ -874,7 +910,7 @@ mod tests {
             keyspace_len: 0,
             extra_args: vec![],
         };
-        hub.dispatch(task, None, stx).await;
+        hub.dispatch(task, None, None, stx).await;
         assert_eq!(hub.capacity().await, 3);
     }
 
@@ -908,7 +944,7 @@ mod tests {
         let pinned = mk_task();
         let pinned_id = pinned.task_id;
         let (s, _r) = mpsc::channel(8);
-        hub.dispatch(pinned, Some(a2), s).await;
+        hub.dispatch(pinned, Some(a2), None, s).await;
         assert!(
             rx1.try_recv().is_err(),
             "pinned task must not be assigned to the wrong agent"
@@ -943,7 +979,7 @@ mod tests {
         // Load both slots -> fully loaded multi-slot agent reads as busy.
         for _ in 0..2 {
             let (s, _r) = mpsc::channel(8);
-            hub.dispatch(mk_task(), None, s).await;
+            hub.dispatch(mk_task(), None, None, s).await;
         }
         assert!(
             hub.live().await[&a].busy,
@@ -954,5 +990,32 @@ mod tests {
         assert!(hub.live().await[&a].errored, "error frame flags the agent");
         hub.set_ready(a, 1).await; // a fresh Ready clears the error
         assert!(!hub.live().await[&a].errored, "Ready clears the error");
+    }
+
+    #[tokio::test]
+    async fn pool_restricted_task_only_runs_on_allowed_agent() {
+        let hub = AgentHub::new();
+        let (a1, a2) = (Uuid::new_v4(), Uuid::new_v4());
+        let (tx1, mut rx1) = mpsc::channel(8);
+        let (tx2, mut rx2) = mpsc::channel(8);
+        hub.register(a1, "gpu-1".into(), tx1).await;
+        hub.register(a2, "gpu-2".into(), tx2).await;
+        // Both have a free slot, but the task's pool allows only a2.
+        hub.set_ready(a1, 1).await;
+        hub.set_ready(a2, 1).await;
+
+        let task = mk_task();
+        let task_id = task.task_id;
+        let (s, _r) = mpsc::channel(8);
+        hub.dispatch(task, None, Some(vec![a2]), s).await;
+
+        assert!(
+            rx1.try_recv().is_err(),
+            "pool-restricted task must not land on a non-allowed agent"
+        );
+        match rx2.try_recv() {
+            Ok(ServerMsg::Assign { task }) => assert_eq!(task.task_id, task_id),
+            other => panic!("expected task on the allowed agent a2, got {other:?}"),
+        }
     }
 }

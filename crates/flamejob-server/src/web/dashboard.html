@@ -423,7 +423,9 @@
             <option value="starttls">StartTLS (tcp/389 → TLS)</option>
             <option value="plaintext">LDAP (plaintext, insecure)</option>
           </select></div>
-        <label class="site-check" id="dirPlainWrap" style="display:none"><input type="checkbox" id="dirPlainAck"> I understand plaintext sends the bind password and user credentials in cleartext</label>
+        <div id="dirPlainWrap" style="display:none;border:1px solid var(--bad);background:rgba(220,70,70,.10);border-radius:8px;padding:9px 11px;margin:2px 0">
+          <div style="color:var(--bad);font-weight:600;margin-bottom:5px">⚠ Plaintext LDAP — insecure</div>
+          <label style="display:block;margin:0;line-height:1.5"><input type="checkbox" id="dirPlainAck" style="vertical-align:-2px;margin-right:6px">I understand the service-bind password and every user's credentials cross the network in <b>cleartext</b>. A hardened domain controller may refuse plain-389 binds anyway; StartTLS reuses port 389 and is the lowest-effort secure option.</label></div>
         <div class="fld"><label>Servers (host or host:port, comma-separated)</label>
           <input id="dirServers" placeholder="dc1.corp.example, dc2.corp.example"></div>
         <label class="site-check"><input type="checkbox" id="dirGc" checked> Query the Global Catalog (3268/3269)</label>
@@ -462,6 +464,19 @@
         <input id="dirMapCn" placeholder="display CN (optional)" style="flex:1">
         <button class="go" type="button" id="dirMapAddBtn">Add</button></div>
       <div class="keys-list" id="dirMapList"></div>
+      <hr style="border:none;border-top:1px solid var(--line);margin:14px 0">
+      <p class="modal-sub" style="margin:0 0 8px">Agent pools (a named set of agents). A job runs only on agents in pools its owner's groups are granted. <span id="dirPoolNote" class="off" style="display:none">(view only — needs Manage agents)</span></p>
+      <div class="site-actions" id="dirPoolAdd">
+        <input id="dirPoolName" placeholder="new pool name (e.g. gpu-farm-a)" style="flex:2">
+        <button class="go" type="button" id="dirPoolAddBtn">Create pool</button></div>
+      <div class="keys-list" id="dirPoolList"></div>
+      <hr style="border:none;border-top:1px solid var(--line);margin:14px 0">
+      <p class="modal-sub" style="margin:0 0 8px">Group → pool grants (matched on <code>objectSid</code>). Grants a security group access to a pool's agents.</p>
+      <div class="site-actions" id="dirGrantAdd">
+        <input id="dirGrantSid" placeholder="S-1-5-21-…-RID" style="flex:2">
+        <select id="dirGrantPool"></select>
+        <button class="go" type="button" id="dirGrantAddBtn">Grant</button></div>
+      <div class="keys-list" id="dirGrantList"></div>
     </div>
   </div>
 
@@ -1571,7 +1586,7 @@ function openDir(){
   ["dirSave","dirEnable","dirDisable","dirMapAddBtn"].forEach(id=>{ document.getElementById(id).style.display = manage?"inline-block":"none"; });
   document.getElementById("dirMapAdd").style.display = manage?"flex":"none";
   document.getElementById("dirManageNote").style.display = manage?"none":"inline";
-  loadDir(); loadMap();
+  loadDir(); loadMap(); loadPools(); loadGrants();
 }
 function closeDir(){ document.getElementById("dirModal").style.display="none"; }
 function dirPlainToggle(){
@@ -1699,6 +1714,76 @@ document.getElementById("dirDisable").onclick=()=>dirToggle(false);
 document.getElementById("dirTest").onclick=testDir;
 document.getElementById("dirTestLogin").onclick=testLoginDir;
 document.getElementById("dirMapAddBtn").onclick=addMap;
+
+// ---- agent pools + group→pool grants (v2.0 PR2) ----
+let DIR_AGENTS = [];
+let DIR_POOLS = [];
+async function loadPools(){
+  const manage = can("manage_agents");
+  document.getElementById("dirPoolAdd").style.display = manage?"flex":"none";
+  document.getElementById("dirPoolNote").style.display = manage?"none":"inline";
+  try{
+    [DIR_AGENTS, DIR_POOLS] = await Promise.all([ api("/agents").catch(()=>[]), api("/admin/pools") ]);
+    const nameOf = id => (DIR_AGENTS.find(a=>a.id===id)||{}).name || id.slice(0,8);
+    document.getElementById("dirPoolList").innerHTML = DIR_POOLS.length ? DIR_POOLS.map(p=>{
+      const members = (p.agent_ids||[]).map(aid=>`<span class="mono">${esc(nameOf(aid))}</span>`+
+        (manage?` <button class="iconbtn" data-pool="${p.id}" data-agent="${aid}" data-act="rm">×</button>`:"")).join(" · ") || '<span class="off">no agents</span>';
+      const avail = DIR_AGENTS.filter(a=>!(p.agent_ids||[]).includes(a.id));
+      const adder = manage && avail.length ? ` <select data-poolsel="${p.id}">${avail.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join("")}</select> <button class="iconbtn" data-pool="${p.id}" data-act="add">add</button>` : "";
+      const del = manage?` <button class="iconbtn" data-pool="${p.id}" data-act="del">delete pool</button>`:"";
+      return `<div class="keyrow"><b>${esc(p.name)}</b>${del}<br>${members}${adder}</div>`;
+    }).join("") : `<span class="off">no pools — with none defined, jobs run on any agent (pre-v2.0 behavior)</span>`;
+    // wire buttons
+    document.querySelectorAll('#dirPoolList button[data-act]').forEach(b=>{
+      const pool=b.dataset.pool, act=b.dataset.act;
+      if(act==="del") b.onclick=()=>delPool(pool);
+      else if(act==="rm") b.onclick=()=>poolMember(pool,b.dataset.agent,false);
+      else if(act==="add") b.onclick=()=>{ const sel=document.querySelector(`select[data-poolsel="${pool}"]`); if(sel&&sel.value) poolMember(pool,sel.value,true); };
+    });
+    // refresh the grant pool picker
+    document.getElementById("dirGrantPool").innerHTML = DIR_POOLS.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join("");
+  }catch(err){ document.getElementById("dirPoolList").innerHTML=`<span class="off">${esc(err.message)}</span>`; }
+}
+async function createPool(){
+  const name=document.getElementById("dirPoolName").value.trim(); if(!name) return;
+  try{ await api("/admin/pools",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})}); document.getElementById("dirPoolName").value=""; loadPools(); }
+  catch(err){ alert(err.message||"create failed"); }
+}
+async function delPool(id){
+  try{ await api(`/admin/pools/${id}`,{method:"DELETE"}); loadPools(); loadGrants(); }
+  catch(err){ alert(err.message||"delete failed"); }
+}
+async function poolMember(pool,agent,add){
+  try{
+    if(add) await api(`/admin/pools/${pool}/members`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({agent_id:agent})});
+    else await api(`/admin/pools/${pool}/members/${agent}`,{method:"DELETE"});
+    loadPools();
+  }catch(err){ alert(err.message||"update failed"); }
+}
+async function loadGrants(){
+  const manage=can("manage_directory");
+  document.getElementById("dirGrantAdd").style.display = manage?"flex":"none";
+  try{
+    const rows=await api("/admin/directory/grants");
+    document.getElementById("dirGrantList").innerHTML = rows.length ? rows.map(g=>
+      `<div class="keyrow"><span class="mono">${esc(g.group_sid)}</span> → <b>${esc(g.pool_name||g.pool_id)}</b>`+
+      (manage?` <button class="iconbtn" data-sid="${esc(g.group_sid)}" data-pool="${g.pool_id}">revoke</button>`:"")+`</div>`).join("")
+      : `<span class="off">no grants</span>`;
+    document.querySelectorAll('#dirGrantList button[data-sid]').forEach(b=>b.onclick=()=>delGrant(b.dataset.sid,b.dataset.pool));
+  }catch(err){ document.getElementById("dirGrantList").innerHTML=`<span class="off">${esc(err.message)}</span>`; }
+}
+async function addGrant(){
+  const sid=document.getElementById("dirGrantSid").value.trim(), pool=document.getElementById("dirGrantPool").value;
+  if(!sid||!pool){ alert("need a group SID and a pool"); return; }
+  try{ await api("/admin/directory/grants",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({group_sid:sid,pool_id:pool})}); document.getElementById("dirGrantSid").value=""; loadGrants(); }
+  catch(err){ alert(err.message||"grant failed"); }
+}
+async function delGrant(sid,pool){
+  try{ await api("/admin/directory/grants",{method:"DELETE",headers:{"Content-Type":"application/json"},body:JSON.stringify({group_sid:sid,pool_id:pool})}); loadGrants(); }
+  catch(err){ alert(err.message||"revoke failed"); }
+}
+document.getElementById("dirPoolAddBtn").onclick=createPool;
+document.getElementById("dirGrantAddBtn").onclick=addGrant;
 
 // ---- job -> agent pinning (superadmin/admin) ----
 // Left-clicking a job name opens a menu to pin the job to a specific agent;

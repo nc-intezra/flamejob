@@ -781,8 +781,10 @@ fn runner_task(
         keyspace_offset: task.keyspace_offset,
         keyspace_len: task.keyspace_len,
         extra_args: task.extra_args.clone(),
-        // The agent runs whatever it's assigned; pinning is enforced server-side.
+        // The agent runs whatever it's assigned; pinning and pool eligibility are
+        // enforced server-side.
         pinned_agent_id: None,
+        allowed_agents: None,
     }
 }
 
