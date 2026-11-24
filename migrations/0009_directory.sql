@@ -1,6 +1,6 @@
 -- flamejob v2.0 Phase 5 — directory authentication (AD/LDAP) core.
 --
--- This migration adds directory-backed sign-in and the SID->role mapping. Agent
+-- This migration (0009) adds directory-backed sign-in and the SID->role mapping. Agent
 -- pools, directory->pool grants and fairness quotas are a separate concern and
 -- land in a later migration; this one is only auth + role mapping + the
 -- runtime-editable connection config.

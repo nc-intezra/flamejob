@@ -303,6 +303,38 @@ pub struct DirectoryRoleMapEntry {
     pub group_cn: Option<String>,
 }
 
+// ---- Agent pools & directory grants (Phase 5 — PR2) ----
+
+/// An agent pool and its current members.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PoolView {
+    pub id: Uuid,
+    pub name: String,
+    pub agent_ids: Vec<Uuid>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Create a pool.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PoolCreate {
+    pub name: String,
+}
+
+/// Add/remove an agent to/from a pool.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct PoolMemberUpdate {
+    pub agent_id: Uuid,
+}
+
+/// A `group_sid -> pool` grant (pool_name/group_cn display-only).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DirectoryGrantEntry {
+    pub group_sid: String,
+    pub pool_id: Uuid,
+    pub pool_name: Option<String>,
+    pub group_cn: Option<String>,
+}
+
 /// RFC 7807 problem+json error body.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Problem {
@@ -452,6 +484,10 @@ impl Event {
         DirectoryTestLoginRequest,
         DirectoryTestLoginResult,
         DirectoryRoleMapEntry,
+        PoolView,
+        PoolCreate,
+        PoolMemberUpdate,
+        DirectoryGrantEntry,
         Problem,
         Event,
         DeviceView,

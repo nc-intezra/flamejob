@@ -9,6 +9,7 @@ mod error;
 mod metrics;
 mod openapi;
 mod pki;
+mod pools;
 mod routes;
 mod scheduler;
 mod settings;

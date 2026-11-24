@@ -265,6 +265,7 @@ mod tests {
             keyspace_len: 0,
             extra_args: vec![],
             pinned_agent_id: None,
+            allowed_agents: None,
         };
         let paths = RunnerPaths {
             potfile: "/var/lib/flamejob/flamejob.pot".into(),

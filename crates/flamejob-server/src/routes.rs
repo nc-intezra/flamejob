@@ -66,6 +66,25 @@ pub fn router(state: AppState) -> Router {
                 .post(crate::directory::routes::add_role_map)
                 .delete(crate::directory::routes::delete_role_map),
         )
+        .route(
+            "/admin/directory/grants",
+            get(crate::directory::routes::list_grants)
+                .post(crate::directory::routes::add_grant)
+                .delete(crate::directory::routes::remove_grant),
+        )
+        .route(
+            "/admin/pools",
+            get(crate::pools::list_pools).post(crate::pools::create_pool),
+        )
+        .route("/admin/pools/:id", delete(crate::pools::delete_pool))
+        .route(
+            "/admin/pools/:id/members",
+            post(crate::pools::add_pool_member),
+        )
+        .route(
+            "/admin/pools/:id/members/:agent_id",
+            delete(crate::pools::remove_pool_member),
+        )
         .route("/openapi.json", get(openapi))
         .route("/auth/login", post(login))
         .route("/auth/me", get(me))
@@ -378,9 +397,15 @@ async fn create_job(
     let priority = body.priority.unwrap_or(100);
     let config =
         serde_json::to_value(&body.config).map_err(|e| AppError::BadRequest(e.to_string()))?;
+    // Server-derived pool eligibility (v2.0): from the owner's verified cached
+    // group SIDs, never a client field. Rejects a directory user with no granted
+    // pool once pools exist; unrestricted for local users / no-pools deployments.
+    let (owner_group_sid, eligible_pool_ids) =
+        crate::pools::compute_eligibility(&state, auth.id).await?;
     sqlx::query(
-        "INSERT INTO jobs (id, name, owner_user_id, hashlist_id, attack_mode, config, priority) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        "INSERT INTO jobs (id, name, owner_user_id, hashlist_id, attack_mode, config, priority, \
+                           owner_group_sid, eligible_pool_ids) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(id)
     .bind(&body.name)
@@ -389,6 +414,8 @@ async fn create_job(
     .bind(body.attack_mode)
     .bind(config)
     .bind(priority)
+    .bind(&owner_group_sid)
+    .bind(&eligible_pool_ids)
     .execute(&state.db)
     .await?;
     let total: i32 = sqlx::query_scalar("SELECT total FROM hashlists WHERE id = $1")
