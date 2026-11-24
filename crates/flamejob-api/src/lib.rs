@@ -187,6 +187,122 @@ pub struct SiteSettingsUpdate {
     pub tls_key_pem: Option<String>,
 }
 
+// ---- Directory (AD/LDAP) — Phase 5 ----
+
+/// Directory connection config as shown to an admin/superadmin. The service
+/// bind password is never returned — only whether one is stored.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DirectoryConfigView {
+    pub enabled: bool,
+    /// `ldaps` | `starttls` | `plaintext`.
+    pub transport: String,
+    /// `srv` | `static`.
+    pub discovery: String,
+    pub domain: Option<String>,
+    pub servers: Vec<String>,
+    pub use_global_catalog: bool,
+    pub base_dn: Option<String>,
+    pub bind_dn: Option<String>,
+    /// Whether a service bind password is stored (the secret is never returned).
+    pub has_bind_password: bool,
+    pub user_filter: String,
+    pub login_attributes: Vec<String>,
+    pub has_ca_bundle: bool,
+    pub verify_hostname: bool,
+    pub allow_insecure_tls: bool,
+    pub plaintext_ack: bool,
+    pub group_source: String,
+    pub cache_ttl_secs: i32,
+    pub on_directory_down: String,
+    #[schema(value_type = Option<String>)]
+    pub default_role: Option<Role>,
+    pub jwt_ttl_hours: i32,
+    pub last_test_ok_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+/// Update to the directory connection config. A blank/omitted `bind_password`
+/// keeps the stored one; set `clear_bind_password` to remove it. `enabled` is
+/// NOT set here — use the separate enable/disable endpoints (test-before-enable).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DirectoryConfigUpdate {
+    pub transport: String,
+    pub discovery: String,
+    pub domain: Option<String>,
+    pub servers: Vec<String>,
+    pub use_global_catalog: bool,
+    pub base_dn: Option<String>,
+    pub bind_dn: Option<String>,
+    #[serde(default)]
+    pub bind_password: Option<String>,
+    #[serde(default)]
+    pub clear_bind_password: bool,
+    pub user_filter: String,
+    pub login_attributes: Vec<String>,
+    #[serde(default)]
+    pub ca_bundle_pem: Option<String>,
+    pub verify_hostname: bool,
+    pub allow_insecure_tls: bool,
+    pub plaintext_ack: bool,
+    pub group_source: String,
+    pub cache_ttl_secs: i32,
+    pub on_directory_down: String,
+    #[schema(value_type = Option<String>)]
+    pub default_role: Option<Role>,
+    pub jwt_ttl_hours: i32,
+}
+
+/// Request body for a staged connection test (runs against the saved config).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DirectoryTestRequest {
+    /// Optional identifier to run the user search filter against.
+    #[serde(default)]
+    pub sample_user: Option<String>,
+}
+
+/// One stage of a connection test.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DirectoryTestStep {
+    pub name: String,
+    pub ok: bool,
+    pub detail: String,
+}
+
+/// Staged connection-test result.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DirectoryTestResult {
+    pub ok: bool,
+    pub steps: Vec<DirectoryTestStep>,
+}
+
+/// Dry-run of a full user login (superadmin): search-then-bind + resolution.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DirectoryTestLoginRequest {
+    pub username: String,
+    pub password: String,
+}
+
+/// Result of a login dry-run: the resolved SID, groups and mapped roles.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DirectoryTestLoginResult {
+    pub ok: bool,
+    pub detail: String,
+    pub dn: Option<String>,
+    pub sid: Option<String>,
+    pub group_sids: Vec<String>,
+    #[schema(value_type = Vec<String>)]
+    pub roles: Vec<Role>,
+}
+
+/// A `group_sid -> role` mapping row (group_cn is display-only).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DirectoryRoleMapEntry {
+    pub group_sid: String,
+    #[schema(value_type = String)]
+    pub role: Role,
+    pub group_cn: Option<String>,
+}
+
 /// RFC 7807 problem+json error body.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Problem {
@@ -328,6 +444,14 @@ impl Event {
         ClearedJobs,
         SiteSettingsView,
         SiteSettingsUpdate,
+        DirectoryConfigView,
+        DirectoryConfigUpdate,
+        DirectoryTestRequest,
+        DirectoryTestResult,
+        DirectoryTestStep,
+        DirectoryTestLoginRequest,
+        DirectoryTestLoginResult,
+        DirectoryRoleMapEntry,
         Problem,
         Event,
         DeviceView,

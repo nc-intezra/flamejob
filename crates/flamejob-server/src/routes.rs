@@ -39,6 +39,33 @@ pub fn router(state: AppState) -> Router {
             "/admin/site-settings",
             get(crate::settings::get_site_settings).put(crate::settings::put_site_settings),
         )
+        .route(
+            "/admin/directory/config",
+            get(crate::directory::routes::get_directory_config)
+                .put(crate::directory::routes::put_directory_config),
+        )
+        .route(
+            "/admin/directory/test",
+            post(crate::directory::routes::test_directory),
+        )
+        .route(
+            "/admin/directory/test-login",
+            post(crate::directory::routes::test_login_directory),
+        )
+        .route(
+            "/admin/directory/enable",
+            post(crate::directory::routes::enable_directory),
+        )
+        .route(
+            "/admin/directory/disable",
+            post(crate::directory::routes::disable_directory),
+        )
+        .route(
+            "/admin/directory/role-map",
+            get(crate::directory::routes::list_role_map)
+                .post(crate::directory::routes::add_role_map)
+                .delete(crate::directory::routes::delete_role_map),
+        )
         .route("/openapi.json", get(openapi))
         .route("/auth/login", post(login))
         .route("/auth/me", get(me))
@@ -128,26 +155,39 @@ async fn login(
     State(state): State<AppState>,
     Json(body): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>, AppError> {
-    let row: Option<(Uuid, Option<String>)> =
+    // Provider chain. Local/break-glass FIRST: a local account with a password
+    // always works, independent of directory availability — so a misconfigured
+    // or unreachable directory can never lock the local superadmin out.
+    let local: Option<(Uuid, Option<String>)> =
         sqlx::query_as("SELECT id, password_hash FROM users WHERE username = $1 AND NOT disabled")
             .bind(&body.username)
             .fetch_optional(&state.db)
             .await?;
-    let (id, Some(hash)) =
-        row.ok_or_else(|| AppError::Unauthorized("invalid credentials".into()))?
-    else {
-        return Err(AppError::Unauthorized("invalid credentials".into()));
-    };
-    if !auth::verify_password(&body.password, &hash) {
-        return Err(AppError::Unauthorized("invalid credentials".into()));
+    if let Some((id, Some(hash))) = &local {
+        if auth::verify_password(&body.password, hash) {
+            let roles = load_roles(&state, *id).await?;
+            let (token, expires_at) = auth::issue_token(&state, *id, &body.username, &roles)?;
+            return Ok(Json(LoginResponse {
+                token,
+                expires_at,
+                roles,
+            }));
+        }
     }
-    let roles = load_roles(&state, id).await?;
-    let (token, expires_at) = auth::issue_token(&state, id, &body.username, &roles)?;
-    Ok(Json(LoginResponse {
-        token,
-        expires_at,
-        roles,
-    }))
+    // Directory provider (AD/LDAP), when enabled. Returns Ok(None) if disabled;
+    // Err (401/403) on a directory auth failure or default-deny.
+    if let Some((id, roles)) =
+        crate::directory::routes::try_directory_login(&state, &body.username, &body.password)
+            .await?
+    {
+        let (token, expires_at) = auth::issue_token(&state, id, &body.username, &roles)?;
+        return Ok(Json(LoginResponse {
+            token,
+            expires_at,
+            roles,
+        }));
+    }
+    Err(AppError::Unauthorized("invalid credentials".into()))
 }
 
 #[utoipa::path(
