@@ -4,6 +4,7 @@ mod auth;
 mod bootstrap;
 mod config;
 mod crypto;
+mod directory;
 mod error;
 mod metrics;
 mod openapi;

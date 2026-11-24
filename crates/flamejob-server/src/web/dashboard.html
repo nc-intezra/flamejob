@@ -359,6 +359,7 @@
     <div class="right">
       <span class="clock" id="clock"></span>
       <button class="iconbtn" id="themeBtn">◐ theme</button>
+      <button class="iconbtn sitesettings" id="dirSettingsBtn" title="Directory (AD/LDAP)" style="display:none">[directory]</button>
       <button class="iconbtn sitesettings" id="siteSettingsBtn" title="Sitewide settings (TLS)" style="display:none">[sitewide settings]</button>
       <div class="usermenu-wrap">
         <button class="user" id="userBtn" title="Account" aria-haspopup="true" aria-expanded="false"><span id="uName" class="mono"></span><span class="role" id="uRoles"></span><span class="caret">▾</span></button>
@@ -406,6 +407,61 @@
         <p class="modal-sub" style="margin:0">Tip: if you serve the dashboard over HTTPS, the API should be reachable over HTTPS too (<code>[server].tls_cert</code> or a proxy) — a browser blocks an HTTPS page calling an HTTP API.</p>
         <div class="site-actions"><button class="go" type="submit" id="siteSave">Save</button><span class="result" id="siteOut"></span></div>
       </form>
+    </div>
+  </div>
+
+  <!-- Directory (AD/LDAP) modal — view/test: admin+superadmin; save/enable: superadmin -->
+  <div class="modal-backdrop" id="dirModal" style="display:none">
+    <div class="modal">
+      <div class="modal-head"><span class="t">Directory (AD/LDAP)</span><button class="iconbtn" id="dirClose">✕</button></div>
+      <p class="modal-sub">Sign in with corporate AD/LDAP credentials; flamejob roles are derived from AD security-group membership (matched on the group's immutable <code>objectSid</code>). The service-account password is stored <strong>encrypted</strong> and never shown again. <span id="dirManageNote" class="off" style="display:none">You can view and test; only a superadmin can save or enable.</span></p>
+      <div class="site-status" id="dirStatus"></div>
+      <form class="site-form" id="dirForm">
+        <div class="fld"><label>Transport</label>
+          <select id="dirTransport">
+            <option value="ldaps">LDAPS (tcp/636) — recommended</option>
+            <option value="starttls">StartTLS (tcp/389 → TLS)</option>
+            <option value="plaintext">LDAP (plaintext, insecure)</option>
+          </select></div>
+        <label class="site-check" id="dirPlainWrap" style="display:none"><input type="checkbox" id="dirPlainAck"> I understand plaintext sends the bind password and user credentials in cleartext</label>
+        <div class="fld"><label>Servers (host or host:port, comma-separated)</label>
+          <input id="dirServers" placeholder="dc1.corp.example, dc2.corp.example"></div>
+        <label class="site-check"><input type="checkbox" id="dirGc" checked> Query the Global Catalog (3268/3269)</label>
+        <div class="fld"><label>Base DN</label><input id="dirBaseDn" placeholder="DC=corp,DC=example"></div>
+        <div class="fld"><label>Service bind DN</label><input id="dirBindDn" placeholder="CN=svc-flamejob,OU=Service,DC=corp,DC=example"></div>
+        <div class="fld"><label>Service bind password</label><input id="dirBindPw" type="password" placeholder="•••••••• leave blank to keep the stored password"></div>
+        <div class="fld"><label>User filter (<code>%u</code> = login, escaped server-side)</label>
+          <textarea id="dirFilter" rows="2" spellcheck="false"></textarea></div>
+        <div class="fld"><label>Login attributes (comma-separated)</label><input id="dirLoginAttrs" placeholder="sAMAccountName,userPrincipalName,mail"></div>
+        <label class="site-check"><input type="checkbox" id="dirVerifyHost" checked> Verify the server certificate hostname</label>
+        <label class="site-check"><input type="checkbox" id="dirInsecure"> Skip TLS chain/hostname verification (lab only)</label>
+        <div class="fld"><label>Default role for authenticated users (optional)</label>
+          <select id="dirDefaultRole"><option value="">none (default deny)</option><option>viewer</option><option>operator</option><option>admin</option><option>superadmin</option></select></div>
+        <div class="fld"><label>On directory unreachable</label>
+          <select id="dirOnDown"><option value="fail_closed">fail closed (deny)</option><option value="cache_only">cache only</option></select></div>
+        <div class="fld"><label>Cache TTL (seconds) · JWT TTL (hours)</label>
+          <span style="display:flex;gap:8px"><input id="dirTtl" type="number" min="30" value="600" style="flex:1"><input id="dirJwt" type="number" min="1" value="8" style="flex:1"></span></div>
+        <div class="site-actions"><button class="go" type="submit" id="dirSave">Save</button>
+          <button class="go" type="button" id="dirEnable">Enable</button>
+          <button class="go" type="button" id="dirDisable">Disable</button>
+          <span class="result" id="dirOut"></span></div>
+      </form>
+      <hr style="border:none;border-top:1px solid var(--line);margin:14px 0">
+      <p class="modal-sub" style="margin:0 0 8px">Test the saved config without locking anyone out. A successful service bind arms <em>Enable</em>.</p>
+      <div class="site-actions"><input id="dirTestUser" placeholder="sample username (optional)" style="flex:1">
+        <button class="go" type="button" id="dirTest">Test connection</button></div>
+      <div class="site-status" id="dirTestOut"></div>
+      <div class="site-actions"><input id="dirTlUser" placeholder="username" style="flex:1"><input id="dirTlPw" type="password" placeholder="password" style="flex:1">
+        <button class="go" type="button" id="dirTestLogin">Test a login</button></div>
+      <div class="site-status" id="dirTlOut"></div>
+      <hr style="border:none;border-top:1px solid var(--line);margin:14px 0">
+      <p class="modal-sub" style="margin:0 0 8px">Group → role map (matched on <code>objectSid</code>). A user gets the union of the roles of every group they belong to.</p>
+      <div class="site-actions" id="dirMapAdd">
+        <input id="dirMapSid" placeholder="S-1-5-21-…-RID" style="flex:2">
+        <select id="dirMapRole"><option>viewer</option><option>operator</option><option>admin</option><option>superadmin</option></select>
+        <input id="dirMapCn" placeholder="display CN (optional)" style="flex:1">
+        <button class="go" type="button" id="dirMapAddBtn">Add</button></div>
+      <div class="keys-list" id="dirMapList"></div>
     </div>
   </div>
 
@@ -505,8 +561,8 @@ document.getElementById("verTag").textContent = CFG.version ? ("v"+CFG.version) 
 
 // ---- role -> capability map (mirrors flamejob-core::model) ----
 const ROLE_CAPS = {
-  superadmin:["manage_users","submit_jobs","ingest","view_plaintext","view_stats","view_jobs","manage_directory","manage_agents","manage_settings"],
-  admin:["manage_users","manage_agents","view_jobs","manage_settings","ingest"],
+  superadmin:["manage_users","submit_jobs","ingest","view_plaintext","view_stats","view_jobs","manage_directory","view_directory_config","manage_agents","manage_settings"],
+  admin:["manage_users","manage_agents","view_jobs","manage_settings","ingest","view_directory_config"],
   operator:["submit_jobs","ingest","view_plaintext","view_stats","view_jobs"],
   viewer:["view_stats","view_jobs"],
 };
@@ -649,6 +705,8 @@ function gatePanels(){
   if(admin) renderAdmin();
   // Sitewide settings link (TLS) — superadmin/admin only.
   document.getElementById("siteSettingsBtn").style.display = can("manage_settings") ? "inline-block" : "none";
+  // Directory link — admin+superadmin can view/test; save/enable gated in-modal to manage_directory.
+  document.getElementById("dirSettingsBtn").style.display = can("view_directory_config") ? "inline-block" : "none";
   // Job submission area (Superadmin + Operator — SubmitJobs).
   const canSubmit = can("submit_jobs");
   document.getElementById("submitPanel").style.display = canSubmit ? "flex":"none";
@@ -1499,6 +1557,148 @@ document.getElementById("siteSettingsBtn").onclick=openSite;
 document.getElementById("siteClose").onclick=closeSite;
 document.getElementById("siteModal").onclick=e=>{ if(e.target.id==="siteModal") closeSite(); };
 document.getElementById("siteForm").onsubmit=saveSite;
+
+// ---- directory (AD/LDAP) modal ----
+const dirCanManage = () => can("manage_directory");
+function openDir(){
+  document.getElementById("dirModal").style.display="flex";
+  document.getElementById("dirOut").textContent="";
+  document.getElementById("dirTestOut").textContent="";
+  document.getElementById("dirTlOut").textContent="";
+  document.getElementById("dirBindPw").value="";
+  // Gate write controls to superadmin (manage_directory).
+  const manage = dirCanManage();
+  ["dirSave","dirEnable","dirDisable","dirMapAddBtn"].forEach(id=>{ document.getElementById(id).style.display = manage?"inline-block":"none"; });
+  document.getElementById("dirMapAdd").style.display = manage?"flex":"none";
+  document.getElementById("dirManageNote").style.display = manage?"none":"inline";
+  loadDir(); loadMap();
+}
+function closeDir(){ document.getElementById("dirModal").style.display="none"; }
+function dirPlainToggle(){
+  document.getElementById("dirPlainWrap").style.display =
+    document.getElementById("dirTransport").value==="plaintext" ? "block":"none";
+}
+async function loadDir(){
+  try{ renderDir(await api("/admin/directory/config")); }
+  catch(err){ document.getElementById("dirStatus").innerHTML=`<span class="off">couldn't load: ${esc(err.message)}</span>`; }
+}
+function renderDir(c){
+  const en = c.enabled ? `<span class="on">enabled</span>` : `<span class="off">disabled</span>`;
+  const tested = c.last_test_ok_at ? `last good test ${new Date(c.last_test_ok_at).toLocaleString()}` : `<span class="off">never tested</span>`;
+  document.getElementById("dirStatus").innerHTML = `Directory auth: ${en} · ${tested}`+
+    (c.updated_at?`<br><span class="off">updated ${new Date(c.updated_at).toLocaleString()}</span>`:"");
+  document.getElementById("dirTransport").value = c.transport||"ldaps";
+  document.getElementById("dirPlainAck").checked = !!c.plaintext_ack;
+  document.getElementById("dirServers").value = (c.servers||[]).join(", ");
+  document.getElementById("dirGc").checked = !!c.use_global_catalog;
+  document.getElementById("dirBaseDn").value = c.base_dn||"";
+  document.getElementById("dirBindDn").value = c.bind_dn||"";
+  document.getElementById("dirBindPw").placeholder = c.has_bind_password ? "•••••••• (stored — leave blank to keep)" : "service account password";
+  document.getElementById("dirFilter").value = c.user_filter||"";
+  document.getElementById("dirLoginAttrs").value = (c.login_attributes||[]).join(",");
+  document.getElementById("dirVerifyHost").checked = c.verify_hostname!==false;
+  document.getElementById("dirInsecure").checked = !!c.allow_insecure_tls;
+  document.getElementById("dirDefaultRole").value = c.default_role||"";
+  document.getElementById("dirOnDown").value = c.on_directory_down||"fail_closed";
+  document.getElementById("dirTtl").value = c.cache_ttl_secs||600;
+  document.getElementById("dirJwt").value = c.jwt_ttl_hours||8;
+  dirPlainToggle();
+}
+function dirBody(){
+  const servers = document.getElementById("dirServers").value.split(",").map(s=>s.trim()).filter(Boolean);
+  const attrs = document.getElementById("dirLoginAttrs").value.split(",").map(s=>s.trim()).filter(Boolean);
+  const pw = document.getElementById("dirBindPw").value;
+  const b = {
+    transport: document.getElementById("dirTransport").value,
+    discovery: "static",
+    domain: null,
+    servers,
+    use_global_catalog: document.getElementById("dirGc").checked,
+    base_dn: document.getElementById("dirBaseDn").value.trim()||null,
+    bind_dn: document.getElementById("dirBindDn").value.trim()||null,
+    clear_bind_password: false,
+    user_filter: document.getElementById("dirFilter").value,
+    login_attributes: attrs,
+    ca_bundle_pem: null,
+    verify_hostname: document.getElementById("dirVerifyHost").checked,
+    allow_insecure_tls: document.getElementById("dirInsecure").checked,
+    plaintext_ack: document.getElementById("dirPlainAck").checked,
+    group_source: "token_groups",
+    cache_ttl_secs: parseInt(document.getElementById("dirTtl").value||"600",10),
+    on_directory_down: document.getElementById("dirOnDown").value,
+    default_role: document.getElementById("dirDefaultRole").value||null,
+    jwt_ttl_hours: parseInt(document.getElementById("dirJwt").value||"8",10),
+  };
+  if(pw) b.bind_password = pw;
+  return b;
+}
+async function saveDir(e){
+  e.preventDefault();
+  const out=document.getElementById("dirOut"); out.style.color="var(--bad)"; out.textContent="";
+  const btn=document.getElementById("dirSave"); btn.disabled=true; btn.textContent="Saving…";
+  try{
+    renderDir(await api("/admin/directory/config",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(dirBody())}));
+    out.style.color="var(--good)"; out.textContent="Saved."; document.getElementById("dirBindPw").value="";
+  }catch(err){ out.textContent=err.message||"save failed"; }
+  finally{ btn.disabled=false; btn.textContent="Save"; }
+}
+async function testDir(){
+  const o=document.getElementById("dirTestOut"); o.innerHTML="testing…";
+  try{
+    const r=await api("/admin/directory/test",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({sample_user:document.getElementById("dirTestUser").value.trim()||null})});
+    o.innerHTML = r.steps.map(s=>`${s.ok?'<span class="on">✓</span>':'<span class="off">✕</span>'} <b>${esc(s.name)}</b> — ${esc(s.detail)}`).join("<br>");
+    loadDir();
+  }catch(err){ o.innerHTML=`<span class="off">${esc(err.message)}</span>`; }
+}
+async function testLoginDir(){
+  const o=document.getElementById("dirTlOut"); o.innerHTML="checking…";
+  try{
+    const r=await api("/admin/directory/test-login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:document.getElementById("dirTlUser").value,password:document.getElementById("dirTlPw").value})});
+    if(r.ok){ o.innerHTML=`<span class="on">✓ ${esc(r.detail)}</span><br>SID: <b>${esc(r.sid||"?")}</b><br>roles: <b>${esc((r.roles||[]).join(", ")||"none")}</b><br>groups: ${esc((r.group_sids||[]).join(", "))}`; }
+    else{ o.innerHTML=`<span class="off">✕ ${esc(r.detail)}</span>`; }
+    document.getElementById("dirTlPw").value="";
+  }catch(err){ o.innerHTML=`<span class="off">${esc(err.message)}</span>`; }
+}
+async function dirToggle(enable){
+  const out=document.getElementById("dirOut"); out.style.color="var(--bad)"; out.textContent="";
+  try{
+    renderDir(await api(`/admin/directory/${enable?"enable":"disable"}`,{method:"POST"}));
+    out.style.color="var(--good)"; out.textContent=enable?"Enabled.":"Disabled.";
+  }catch(err){ out.textContent=err.message||"failed"; }
+}
+async function loadMap(){
+  try{
+    const rows=await api("/admin/directory/role-map");
+    const manage=dirCanManage();
+    document.getElementById("dirMapList").innerHTML = rows.length? rows.map(r=>
+      `<div class="keyrow"><span class="mono">${esc(r.group_sid)}</span> → <b>${esc(r.role)}</b> ${r.group_cn?`<span class="off">(${esc(r.group_cn)})</span>`:""}`+
+      (manage?` <button class="iconbtn" data-sid="${esc(r.group_sid)}" data-role="${esc(r.role)}">remove</button>`:"")+`</div>`).join("")
+      : `<span class="off">no mappings — directory users get no role until a group is mapped</span>`;
+    document.querySelectorAll('#dirMapList button[data-sid]').forEach(b=>b.onclick=()=>delMap(b.dataset.sid,b.dataset.role));
+  }catch(err){ document.getElementById("dirMapList").innerHTML=`<span class="off">${esc(err.message)}</span>`; }
+}
+async function addMap(){
+  const sid=document.getElementById("dirMapSid").value.trim();
+  if(!sid) return;
+  try{
+    await api("/admin/directory/role-map",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({group_sid:sid,role:document.getElementById("dirMapRole").value,group_cn:document.getElementById("dirMapCn").value.trim()||null})});
+    document.getElementById("dirMapSid").value=""; document.getElementById("dirMapCn").value=""; loadMap();
+  }catch(err){ alert(err.message||"add failed"); }
+}
+async function delMap(sid,role){
+  try{ await api("/admin/directory/role-map",{method:"DELETE",headers:{"Content-Type":"application/json"},body:JSON.stringify({group_sid:sid,role})}); loadMap(); }
+  catch(err){ alert(err.message||"remove failed"); }
+}
+document.getElementById("dirSettingsBtn").onclick=openDir;
+document.getElementById("dirClose").onclick=closeDir;
+document.getElementById("dirModal").onclick=e=>{ if(e.target.id==="dirModal") closeDir(); };
+document.getElementById("dirForm").onsubmit=saveDir;
+document.getElementById("dirTransport").onchange=dirPlainToggle;
+document.getElementById("dirEnable").onclick=()=>dirToggle(true);
+document.getElementById("dirDisable").onclick=()=>dirToggle(false);
+document.getElementById("dirTest").onclick=testDir;
+document.getElementById("dirTestLogin").onclick=testLoginDir;
+document.getElementById("dirMapAddBtn").onclick=addMap;
 
 // ---- job -> agent pinning (superadmin/admin) ----
 // Left-clicking a job name opens a menu to pin the job to a specific agent;

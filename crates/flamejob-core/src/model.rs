@@ -23,6 +23,12 @@ pub enum Capability {
     ViewStats,
     ViewJobs,
     ManageDirectory,
+    /// View (read-only) the directory/AD-LDAP connection config and run
+    /// connection/login tests. Granted to admin + superadmin; the dangerous
+    /// mutations (save, enable/disable, edit the SID->role map) stay on
+    /// `ManageDirectory` (superadmin only), since a wrong directory config is an
+    /// org-wide-auth event.
+    ViewDirectoryConfig,
     ManageAgents,
     /// Change sitewide settings, including the TLS certificate/key and the
     /// HTTPS-on-443 toggle. High-privilege: whoever holds it controls the site's
@@ -42,6 +48,7 @@ impl Role {
                 ViewStats,
                 ViewJobs,
                 ManageDirectory,
+                ViewDirectoryConfig,
                 ManageAgents,
                 ManageSettings,
             ],
@@ -49,8 +56,17 @@ impl Role {
             // job queue they pin to agents (you can't pin what you can't see).
             // Ingest lets an admin bulk-add wordlists/rules from the dashboard
             // (the attack corpus is part of operating the fleet); admins still
-            // cannot submit jobs.
-            Role::Admin => &[ManageUsers, ManageAgents, ViewJobs, ManageSettings, Ingest],
+            // cannot submit jobs. ViewDirectoryConfig lets an admin view and
+            // test the directory config, but not save/enable it (that stays
+            // superadmin).
+            Role::Admin => &[
+                ManageUsers,
+                ManageAgents,
+                ViewJobs,
+                ManageSettings,
+                Ingest,
+                ViewDirectoryConfig,
+            ],
             Role::Operator => &[SubmitJobs, Ingest, ViewPlaintext, ViewStats, ViewJobs],
             Role::Viewer => &[ViewStats, ViewJobs],
         }
@@ -130,6 +146,12 @@ mod tests {
         assert!(!Role::Viewer.has(Capability::SubmitJobs));
         assert!(Role::Viewer.has(Capability::ViewJobs));
         assert!(Role::Superadmin.has(Capability::ManageDirectory));
+        // ViewDirectoryConfig: admin + superadmin may view/test the directory
+        // config; write/enable stays on ManageDirectory (superadmin only).
+        assert!(Role::Superadmin.has(Capability::ViewDirectoryConfig));
+        assert!(Role::Admin.has(Capability::ViewDirectoryConfig));
+        assert!(!Role::Admin.has(Capability::ManageDirectory));
+        assert!(!Role::Operator.has(Capability::ViewDirectoryConfig));
         assert!(Role::Superadmin.has(Capability::ManageAgents));
         assert!(Role::Admin.has(Capability::ManageAgents));
         assert!(!Role::Operator.has(Capability::ManageAgents));
