@@ -198,6 +198,10 @@ impl Scheduler {
         //    restart (so it is rebuilt), admit queued jobs up to the concurrency
         //    cap, then distribute the fleet's capacity across every running job.
         self.requeue_orphaned_running().await;
+        // Resume preempt-requeued jobs whose chunks have stopped: split the
+        // stopped chunks at their offset and re-dispatch the remainder (keyspace
+        // handoff, possibly to a new pool) without re-planning from scratch.
+        self.resume_preempted_jobs().await;
         self.promote_queued_jobs().await?;
         self.fill_fleet().await;
 
@@ -209,7 +213,7 @@ impl Scheduler {
         let mut tx = self.state.db.begin().await?;
         let row: Option<(Uuid, Uuid, i16, serde_json::Value)> = sqlx::query_as(
             "SELECT id, hashlist_id, attack_mode, config FROM jobs \
-             WHERE state = 'queued' ORDER BY priority, created_at \
+             WHERE state = 'queued' ORDER BY COALESCE(priority_override, priority), created_at \
              FOR UPDATE SKIP LOCKED LIMIT 1",
         )
         .fetch_optional(&mut *tx)
@@ -329,6 +333,79 @@ impl Scheduler {
         }
     }
 
+    /// Resume preempt-requeued jobs that have fully stopped: hand the unfinished
+    /// keyspace of each stopped chunk to the (possibly new) pool by splitting it
+    /// at its last progress offset and re-dispatching the remainder — the handoff
+    /// Slurm can't do (it restarts the whole job). Rebuilds inputs WITHOUT
+    /// re-planning chunks (which would wipe the split), then flips back to running.
+    async fn resume_preempted_jobs(self: &Arc<Self>) {
+        let rows: Vec<(Uuid, Uuid, i16, serde_json::Value)> = sqlx::query_as(
+            "SELECT j.id, j.hashlist_id, j.attack_mode, j.config FROM jobs j \
+             WHERE j.preempt_state = 'requeued' AND j.state = 'paused' \
+               AND (j.resume_after IS NULL OR j.resume_after <= now()) \
+               AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.job_id = j.id AND t.state = 'running')",
+        )
+        .fetch_all(&self.state.db)
+        .await
+        .unwrap_or_default();
+
+        for (job_id, hashlist_id, attack_mode, config) in rows {
+            if self.inflight_count_for(job_id).await > 0 {
+                continue; // an in-flight handle isn't torn down yet; wait a tick
+            }
+            // Split each stopped (paused) chunk at its last progress offset.
+            let tasks: Vec<(Uuid, i64, i64, f64)> = sqlx::query_as(
+                "SELECT id, keyspace_offset, keyspace_len, progress FROM tasks \
+                 WHERE job_id = $1 AND state = 'paused'",
+            )
+            .bind(job_id)
+            .fetch_all(&self.state.db)
+            .await
+            .unwrap_or_default();
+            for (tid, off, len, prog) in tasks {
+                let (noff, nlen) = crate::preempt::remaining_window(off, len, prog);
+                if len > 0 && nlen <= 0 {
+                    let _ = self.set_task(tid, "done").await;
+                } else {
+                    let _ = sqlx::query(
+                        "UPDATE tasks SET keyspace_offset = $2, keyspace_len = $3, \
+                         state = 'pending', progress = 0 WHERE id = $1",
+                    )
+                    .bind(tid)
+                    .bind(noff)
+                    .bind(nlen)
+                    .execute(&self.state.db)
+                    .await;
+                }
+            }
+            // Rebuild inputs (hash file + keyspace probe) WITHOUT re-planning.
+            match self
+                .prepare_inputs(job_id, hashlist_id, attack_mode, config)
+                .await
+            {
+                Ok(inputs) => {
+                    self.inputs.lock().await.insert(job_id, Arc::new(inputs));
+                }
+                Err(e) => {
+                    tracing::error!(%job_id, error = %e, "preempt-resume: failed to rebuild inputs");
+                    continue;
+                }
+            }
+            let _ = sqlx::query(
+                "UPDATE jobs SET state = 'running', preempt_state = NULL, \
+                 est_completion = NULL WHERE id = $1",
+            )
+            .bind(job_id)
+            .execute(&self.state.db)
+            .await;
+            self.state.publish(Event::JobUpdated {
+                job_id,
+                state: JobState::Running,
+            });
+            tracing::info!(%job_id, "preempted job resumed (keyspace handoff)");
+        }
+    }
+
     /// Distribute the fleet's chunk capacity across all admitted jobs using
     /// weighted fair-share across the owning directory groups (PR3): each free
     /// slot goes to the fairest group's next job (see `crate::fairness`), which
@@ -413,7 +490,8 @@ impl Scheduler {
     /// and creation epoch (for the fair-share selector).
     async fn fillable_candidate_rows(&self) -> Vec<(Uuid, String, i32, i64)> {
         sqlx::query_as(
-            "SELECT j.id, COALESCE(j.owner_group_sid, ''), j.priority, \
+            "SELECT j.id, COALESCE(j.owner_group_sid, ''), \
+                    COALESCE(j.priority_override, j.priority), \
                     EXTRACT(EPOCH FROM j.created_at)::bigint \
              FROM jobs j WHERE j.state = 'running' \
              AND EXISTS (SELECT 1 FROM tasks t WHERE t.job_id = j.id AND t.state = 'pending')",

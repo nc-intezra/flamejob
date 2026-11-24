@@ -56,6 +56,8 @@ impl Modify for SecurityAddon {
         crate::routes::cancel_job,
         crate::routes::pin_job,
         crate::routes::unpin_job,
+        crate::preempt::set_priority_override,
+        crate::preempt::preempt_job,
         crate::routes::list_hashlists,
         crate::routes::create_hashlist,
         crate::routes::list_cracked,

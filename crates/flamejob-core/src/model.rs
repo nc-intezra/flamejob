@@ -34,6 +34,10 @@ pub enum Capability {
     /// HTTPS-on-443 toggle. High-privilege: whoever holds it controls the site's
     /// transport security. Granted to superadmin and admin.
     ManageSettings,
+    /// Override a job's queue priority and preempt (evict/requeue/cancel) a
+    /// running job — the "management decree" lever. Deliberately able to act
+    /// against fair-share, so every use is audited. Granted to superadmin + admin.
+    ManageScheduling,
 }
 
 impl Role {
@@ -51,6 +55,7 @@ impl Role {
                 ViewDirectoryConfig,
                 ManageAgents,
                 ManageSettings,
+                ManageScheduling,
             ],
             // Admin manages users and agents; ViewJobs lets an admin see the
             // job queue they pin to agents (you can't pin what you can't see).
@@ -62,6 +67,7 @@ impl Role {
                 ViewJobs,
                 ManageSettings,
                 ViewDirectoryConfig,
+                ManageScheduling,
             ],
             Role::Operator => &[SubmitJobs, Ingest, ViewPlaintext, ViewStats, ViewJobs],
             Role::Viewer => &[ViewStats, ViewJobs],
@@ -148,6 +154,11 @@ mod tests {
         assert!(Role::Admin.has(Capability::ViewDirectoryConfig));
         assert!(!Role::Admin.has(Capability::ManageDirectory));
         assert!(!Role::Operator.has(Capability::ViewDirectoryConfig));
+        // ManageScheduling (priority override + preemption): superadmin + admin.
+        assert!(Role::Superadmin.has(Capability::ManageScheduling));
+        assert!(Role::Admin.has(Capability::ManageScheduling));
+        assert!(!Role::Operator.has(Capability::ManageScheduling));
+        assert!(!Role::Viewer.has(Capability::ManageScheduling));
         assert!(Role::Superadmin.has(Capability::ManageAgents));
         assert!(Role::Admin.has(Capability::ManageAgents));
         assert!(!Role::Operator.has(Capability::ManageAgents));

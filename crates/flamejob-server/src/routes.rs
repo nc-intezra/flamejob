@@ -105,6 +105,11 @@ pub fn router(state: AppState) -> Router {
         .route("/jobs/:id/resume", post(resume_job))
         .route("/jobs/:id/cancel", post(cancel_job))
         .route("/jobs/:id/pin", post(pin_job).delete(unpin_job))
+        .route(
+            "/jobs/:id/priority",
+            post(crate::preempt::set_priority_override),
+        )
+        .route("/jobs/:id/preempt", post(crate::preempt::preempt_job))
         .route("/hashlists", get(list_hashlists).post(create_hashlist))
         .route("/hashlists/:id/cracked", get(list_cracked))
         .route("/hashlists/:id/hashes", post(import_hashes))
@@ -371,10 +376,11 @@ async fn list_jobs(
     auth: AuthUser,
 ) -> Result<Json<Vec<JobView>>, AppError> {
     auth.require(Capability::ViewJobs)?;
-    let rows: Vec<JobAgg> =
-        sqlx::query_as(&format!("{JOB_SELECT} ORDER BY j.priority, j.created_at"))
-            .fetch_all(&state.db)
-            .await?;
+    let rows: Vec<JobAgg> = sqlx::query_as(&format!(
+        "{JOB_SELECT} ORDER BY COALESCE(j.priority_override, j.priority), j.created_at"
+    ))
+    .fetch_all(&state.db)
+    .await?;
     let running = running_agents_by_job(&state).await;
     Ok(Json(
         rows.into_iter()
@@ -461,6 +467,8 @@ async fn create_job(
         hashlist_id: body.hashlist_id,
         state: JobState::Queued,
         priority,
+        priority_override: None,
+        preempt_state: None,
         created_at: Utc::now(),
         est_completion: None,
         progress: 0.0,
@@ -1279,7 +1287,7 @@ const JOB_SELECT: &str = "SELECT j.id, j.name, j.hashlist_id, j.state::text, j.p
         ELSE t.progress*GREATEST(t.keyspace_len,1)::float8 END) \
         / NULLIF(SUM(GREATEST(t.keyspace_len,1)),0) FROM tasks t WHERE t.job_id=j.id),0)::float8 AS progress, \
     COALESCE((SELECT SUM(speed) FROM tasks t WHERE t.job_id=j.id AND t.state='running'),0)::int8 AS speed, \
-    h.cracked, h.total, j.pinned_agent_id, ap.name \
+    h.cracked, h.total, j.pinned_agent_id, ap.name, j.priority_override, j.preempt_state \
     FROM jobs j JOIN hashlists h ON h.id=j.hashlist_id \
     LEFT JOIN agents ap ON ap.id=j.pinned_agent_id";
 
@@ -1297,6 +1305,8 @@ type JobAgg = (
     i32,
     Option<Uuid>,
     Option<String>,
+    Option<i32>,
+    Option<String>,
 );
 
 fn job_view(r: JobAgg) -> JobView {
@@ -1306,6 +1316,8 @@ fn job_view(r: JobAgg) -> JobView {
         hashlist_id: r.2,
         state: parse_job_state(&r.3),
         priority: r.4,
+        priority_override: r.13,
+        preempt_state: r.14,
         created_at: r.5,
         est_completion: r.6,
         progress: r.7,

@@ -532,8 +532,8 @@ document.getElementById("verTag").textContent = CFG.version ? ("v"+CFG.version) 
 
 // ---- role -> capability map (mirrors flamejob-core::model) ----
 const ROLE_CAPS = {
-  superadmin:["manage_users","submit_jobs","ingest","view_plaintext","view_stats","view_jobs","manage_directory","view_directory_config","manage_agents","manage_settings"],
-  admin:["manage_users","manage_agents","view_jobs","manage_settings","view_directory_config"],
+  superadmin:["manage_users","submit_jobs","ingest","view_plaintext","view_stats","view_jobs","manage_directory","view_directory_config","manage_agents","manage_settings","manage_scheduling"],
+  admin:["manage_users","manage_agents","view_jobs","manage_settings","view_directory_config","manage_scheduling"],
   operator:["submit_jobs","ingest","view_plaintext","view_stats","view_jobs"],
   viewer:["view_stats","view_jobs"],
 };
@@ -825,6 +825,46 @@ function renderDetailSummary(j){
     ctl.innerHTML = `<button data-a="pause">pause</button><button data-a="resume">resume</button><button class="danger" data-a="cancel">cancel</button>`;
     [...ctl.querySelectorAll("button")].forEach(b=>b.onclick=()=>jobAction(j.id, b.getAttribute("data-a")));
   } else ctl.innerHTML="";
+  // Scheduling controls (manage_scheduling): priority override + preemption.
+  if(can("manage_scheduling")){
+    const ov=j.priority_override, running=j.state==="running";
+    const pstate = j.preempt_state ? ` <span class="warn">· preempt: ${esc(j.preempt_state)}</span>` : "";
+    const strip=document.createElement("div");
+    strip.style.cssText="margin-top:7px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:12px";
+    strip.innerHTML =
+      `<span class="dim">scheduling:</span>`+
+      `<input id="schedPrio" type="number" title="priority override — lower = higher priority; blank clears" placeholder="priority" value="${ov==null?"":ov}" style="width:84px">`+
+      `<button class="iconbtn" id="schedSetPrio">set priority</button>`+
+      (running ? `<select id="schedPool" title="requeue the remainder onto this pool (optional)"><option value="">same pool</option></select>`+
+        `<button class="iconbtn" id="schedPreempt" title="evict + resume the remainder (keyspace handoff)">⏏ preempt → requeue</button>`+
+        `<button class="iconbtn danger" id="schedCancel" title="evict + cancel (hard stop)">preempt → cancel</button>` : ``)+
+      pstate;
+    document.getElementById("detailSummary").appendChild(strip);
+    document.getElementById("schedSetPrio").onclick=()=>setJobPriority(j.id);
+    if(running){
+      document.getElementById("schedPreempt").onclick=()=>preemptJob(j.id,"requeue");
+      document.getElementById("schedCancel").onclick=()=>preemptJob(j.id,"cancel");
+      populateSchedPools();
+    }
+  }
+}
+let SCHED_POOLS=null;
+async function populateSchedPools(){
+  const sel=document.getElementById("schedPool"); if(!sel) return;
+  if(SCHED_POOLS===null){ SCHED_POOLS=await api("/admin/pools").catch(()=>[]); }
+  sel.innerHTML=`<option value="">same pool</option>`+(SCHED_POOLS||[]).map(p=>`<option value="${p.id}">→ ${esc(p.name)}</option>`).join("");
+}
+async function setJobPriority(id){
+  const v=document.getElementById("schedPrio").value.trim();
+  const body={ priority_override: v===""?null:parseInt(v,10), reason:"dashboard override" };
+  try{ await api("/jobs/"+id+"/priority",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}); flash("priority "+(v===""?"override cleared":"set to "+v)); tick(); }
+  catch(err){ flash("priority failed: "+err.message,true); }
+}
+async function preemptJob(id,mode){
+  const reason=prompt((mode==="cancel"?"Cancel (hard-stop)":"Requeue")+" this running job — reason (audited):","management priority"); if(reason===null) return;
+  const sel=document.getElementById("schedPool"); const pool=(mode==="requeue"&&sel&&sel.value)?sel.value:null;
+  try{ await api("/jobs/"+id+"/preempt",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mode,target_pool_id:pool,reason})}); flash("preempt ("+mode+") requested"); tick(); }
+  catch(err){ flash("preempt failed: "+err.message,true); }
 }
 
 // Swap the detail body between the chunk table and the cracked-password list.
