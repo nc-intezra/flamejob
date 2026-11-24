@@ -13,7 +13,7 @@ use uuid::Uuid;
 use flamejob_api::{
     DirectoryConfigUpdate, DirectoryConfigView, DirectoryGrantEntry, DirectoryRoleMapEntry,
     DirectoryTestLoginRequest, DirectoryTestLoginResult, DirectoryTestRequest, DirectoryTestResult,
-    DirectoryTestStep,
+    DirectoryTestStep, GroupQuotaEntry,
 };
 use flamejob_core::{Capability, Role};
 
@@ -637,4 +637,110 @@ pub async fn remove_grant(
     )
     .await;
     Ok(Json(serde_json::json!({ "revoked": true })))
+}
+
+// ---- per-group fair-share quotas (PR3) ----
+
+#[utoipa::path(
+    get, path = "/admin/directory/quotas", tag = "directory", security(("bearer" = [])),
+    responses((status = 200, body = [GroupQuotaEntry]), (status = 403, description = "Missing ViewDirectoryConfig"))
+)]
+pub async fn list_quotas(
+    State(state): State<AppState>,
+    auth: AuthUser,
+) -> Result<Json<Vec<GroupQuotaEntry>>, AppError> {
+    auth.require(Capability::ViewDirectoryConfig)?;
+    type QuotaRow = (String, i32, i32, Option<i32>, Option<i32>, Option<String>);
+    let rows: Vec<QuotaRow> = sqlx::query_as(
+        "SELECT group_sid, weight, floor_slots, ceil_slots, max_submit_jobs, group_cn \
+         FROM group_quota ORDER BY group_sid",
+    )
+    .fetch_all(&state.db)
+    .await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(
+                |(group_sid, weight, floor_slots, ceil_slots, max_submit_jobs, group_cn)| {
+                    GroupQuotaEntry {
+                        group_sid,
+                        weight,
+                        floor_slots,
+                        ceil_slots,
+                        max_submit_jobs,
+                        group_cn,
+                    }
+                },
+            )
+            .collect(),
+    ))
+}
+
+#[utoipa::path(
+    put, path = "/admin/directory/quotas", tag = "directory", security(("bearer" = [])),
+    request_body = GroupQuotaEntry,
+    responses((status = 200, description = "Saved"), (status = 403, description = "Missing ManageDirectory"))
+)]
+pub async fn put_quota(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Json(q): Json<GroupQuotaEntry>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    auth.require(Capability::ManageDirectory)?;
+    let sid = q.group_sid.trim();
+    if sid.is_empty() {
+        return Err(AppError::BadRequest("group_sid is required".into()));
+    }
+    if q.weight <= 0 {
+        return Err(AppError::BadRequest("weight must be > 0".into()));
+    }
+    if q.floor_slots < 0
+        || q.ceil_slots.is_some_and(|c| c < 0)
+        || q.max_submit_jobs.is_some_and(|m| m < 0)
+    {
+        return Err(AppError::BadRequest("slot limits must be >= 0".into()));
+    }
+    sqlx::query(
+        "INSERT INTO group_quota (group_sid, weight, floor_slots, ceil_slots, max_submit_jobs, group_cn, updated_by, updated_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, now()) \
+         ON CONFLICT (group_sid) DO UPDATE SET weight = EXCLUDED.weight, floor_slots = EXCLUDED.floor_slots, \
+           ceil_slots = EXCLUDED.ceil_slots, max_submit_jobs = EXCLUDED.max_submit_jobs, \
+           group_cn = EXCLUDED.group_cn, updated_by = EXCLUDED.updated_by, updated_at = now()",
+    )
+    .bind(sid)
+    .bind(q.weight)
+    .bind(q.floor_slots)
+    .bind(q.ceil_slots)
+    .bind(q.max_submit_jobs)
+    .bind(&q.group_cn)
+    .bind(auth.id)
+    .execute(&state.db)
+    .await?;
+    audit(&state, Some(auth.id), "directory.quota.update", "ok", sid).await;
+    Ok(Json(serde_json::json!({ "saved": true })))
+}
+
+#[utoipa::path(
+    delete, path = "/admin/directory/quotas", tag = "directory", security(("bearer" = [])),
+    request_body = GroupQuotaEntry,
+    responses((status = 200, description = "Removed"), (status = 403, description = "Missing ManageDirectory"))
+)]
+pub async fn delete_quota(
+    State(state): State<AppState>,
+    auth: AuthUser,
+    Json(q): Json<GroupQuotaEntry>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    auth.require(Capability::ManageDirectory)?;
+    sqlx::query("DELETE FROM group_quota WHERE group_sid = $1")
+        .bind(q.group_sid.trim())
+        .execute(&state.db)
+        .await?;
+    audit(
+        &state,
+        Some(auth.id),
+        "directory.quota.remove",
+        "ok",
+        q.group_sid.trim(),
+    )
+    .await;
+    Ok(Json(serde_json::json!({ "removed": true })))
 }

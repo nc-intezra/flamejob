@@ -9,6 +9,8 @@ pub enum AppError {
     Forbidden(String),
     NotFound(String),
     BadRequest(String),
+    /// Quota/rate backpressure (e.g. a group's max concurrent submitted jobs).
+    TooManyRequests(String),
     Internal(String),
 }
 
@@ -19,6 +21,11 @@ impl AppError {
             AppError::Forbidden(m) => (StatusCode::FORBIDDEN, "forbidden", m.clone()),
             AppError::NotFound(m) => (StatusCode::NOT_FOUND, "not_found", m.clone()),
             AppError::BadRequest(m) => (StatusCode::BAD_REQUEST, "bad_request", m.clone()),
+            AppError::TooManyRequests(m) => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "too_many_requests",
+                m.clone(),
+            ),
             AppError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, "internal", m.clone()),
         }
     }

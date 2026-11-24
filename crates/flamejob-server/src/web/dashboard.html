@@ -428,6 +428,16 @@
         <select id="dirGrantPool"></select>
         <button class="go" type="button" id="dirGrantAddBtn">Grant</button></div>
       <div class="keys-list" id="dirGrantList"></div>
+      <hr style="border:none;border-top:1px solid var(--line);margin:14px 0">
+      <p class="modal-sub" style="margin:0 0 8px">Fair-share weights &amp; quotas (per directory group). Higher <b>weight</b> = larger share of contested GPU slots; <b>floor</b> = guaranteed slots; <b>ceiling</b> = burst cap; <b>max jobs</b> = submit backpressure. Groups without a row use defaults (weight 100, no limits).</p>
+      <div class="site-actions" id="dirQuotaAdd" style="flex-wrap:wrap">
+        <input id="dirQuotaSid" placeholder="S-1-5-21-…-RID" style="flex:2;min-width:160px">
+        <input id="dirQuotaWeight" type="number" min="1" value="100" title="weight" style="width:72px">
+        <input id="dirQuotaFloor" type="number" min="0" value="0" title="floor slots" style="width:64px">
+        <input id="dirQuotaCeil" type="number" min="0" placeholder="ceil" title="ceiling slots (blank = none)" style="width:64px">
+        <input id="dirQuotaMax" type="number" min="0" placeholder="jobs" title="max submitted jobs (blank = unlimited)" style="width:72px">
+        <button class="go" type="button" id="dirQuotaAddBtn">Set</button></div>
+      <div class="keys-list" id="dirQuotaList"></div>
     </div>
   </div>
 
@@ -1267,7 +1277,7 @@ function openDir(){
   ["dirSave","dirEnable","dirDisable","dirMapAddBtn"].forEach(id=>{ document.getElementById(id).style.display = manage?"inline-block":"none"; });
   document.getElementById("dirMapAdd").style.display = manage?"flex":"none";
   document.getElementById("dirManageNote").style.display = manage?"none":"inline";
-  loadDir(); loadMap(); loadPools(); loadGrants();
+  loadDir(); loadMap(); loadPools(); loadGrants(); loadQuotas();
 }
 function closeDir(){ document.getElementById("dirModal").style.display="none"; }
 function dirPlainToggle(){
@@ -1465,6 +1475,34 @@ async function delGrant(sid,pool){
 }
 document.getElementById("dirPoolAddBtn").onclick=createPool;
 document.getElementById("dirGrantAddBtn").onclick=addGrant;
+
+// ---- per-group fair-share quotas (v2.0 PR3) ----
+async function loadQuotas(){
+  const manage=can("manage_directory");
+  document.getElementById("dirQuotaAdd").style.display = manage?"flex":"none";
+  try{
+    const rows=await api("/admin/directory/quotas");
+    document.getElementById("dirQuotaList").innerHTML = rows.length ? rows.map(q=>
+      `<div class="keyrow"><span class="mono">${esc(q.group_sid)}</span> — weight <b>${q.weight}</b>, floor ${q.floor_slots}, ceiling ${q.ceil_slots==null?"∞":q.ceil_slots}, max jobs ${q.max_submit_jobs==null?"∞":q.max_submit_jobs}`+
+      (manage?` <button class="iconbtn" data-sid="${esc(q.group_sid)}">remove</button>`:"")+`</div>`).join("")
+      : `<span class="off">no custom quotas — all groups use defaults (weight 100, no floor/ceiling, no submit cap)</span>`;
+    document.querySelectorAll('#dirQuotaList button[data-sid]').forEach(b=>b.onclick=()=>delQuota(b.dataset.sid));
+  }catch(err){ document.getElementById("dirQuotaList").innerHTML=`<span class="off">${esc(err.message)}</span>`; }
+}
+async function setQuota(){
+  const sid=document.getElementById("dirQuotaSid").value.trim(); if(!sid){ alert("need a group SID"); return; }
+  const num=id=>{ const v=document.getElementById(id).value.trim(); return v===""?null:parseInt(v,10); };
+  const body={ group_sid:sid, weight:parseInt(document.getElementById("dirQuotaWeight").value||"100",10),
+    floor_slots:parseInt(document.getElementById("dirQuotaFloor").value||"0",10),
+    ceil_slots:num("dirQuotaCeil"), max_submit_jobs:num("dirQuotaMax"), group_cn:null };
+  try{ await api("/admin/directory/quotas",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}); document.getElementById("dirQuotaSid").value=""; loadQuotas(); }
+  catch(err){ alert(err.message||"save failed"); }
+}
+async function delQuota(sid){
+  try{ await api("/admin/directory/quotas",{method:"DELETE",headers:{"Content-Type":"application/json"},body:JSON.stringify({group_sid:sid,weight:100,floor_slots:0,ceil_slots:null,max_submit_jobs:null,group_cn:null})}); loadQuotas(); }
+  catch(err){ alert(err.message||"remove failed"); }
+}
+document.getElementById("dirQuotaAddBtn").onclick=setQuota;
 
 // ---- job -> agent pinning (superadmin/admin) ----
 // Left-clicking a job name opens a menu to pin the job to a specific agent;
