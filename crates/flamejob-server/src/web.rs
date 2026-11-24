@@ -173,6 +173,10 @@ fn render_dashboard(cfg: &Config) -> String {
         "apiPort": api_port,
         "theme": cfg.web.theme,
         "version": env!("CARGO_PKG_VERSION"),
+        // Per-request upload ceiling (bytes) so the ingest pane can gauge each
+        // file against the /files route's DefaultBodyLimit. 8 GiB < 2^53, so it
+        // stays an exact JS number.
+        "uploadLimit": crate::routes::MAX_FILE_UPLOAD_BYTES,
     });
     DASHBOARD_HTML.replace("\"__FJCFG__\"", &blob.to_string())
 }

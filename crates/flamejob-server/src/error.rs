@@ -9,6 +9,9 @@ pub enum AppError {
     Forbidden(String),
     NotFound(String),
     BadRequest(String),
+    /// Request well-formed but can't be stored — e.g. the upload would push the
+    /// total file corpus past the configured quota. Maps to 507.
+    InsufficientStorage(String),
     Internal(String),
 }
 
@@ -19,6 +22,11 @@ impl AppError {
             AppError::Forbidden(m) => (StatusCode::FORBIDDEN, "forbidden", m.clone()),
             AppError::NotFound(m) => (StatusCode::NOT_FOUND, "not_found", m.clone()),
             AppError::BadRequest(m) => (StatusCode::BAD_REQUEST, "bad_request", m.clone()),
+            AppError::InsufficientStorage(m) => (
+                StatusCode::INSUFFICIENT_STORAGE,
+                "insufficient_storage",
+                m.clone(),
+            ),
             AppError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, "internal", m.clone()),
         }
     }

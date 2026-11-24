@@ -4,6 +4,52 @@ All notable changes to flamejob are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-11-23
+
+Bulk ingest of wordlists and rules from the dashboard, and OS-aware agent status
+icons.
+
+### Added
+- **Bulk wordlist & rule ingest in the dashboard.** A new **Ingest wordlists &
+  rules** panel (below *Submit a job*) lets you queue many files per category and
+  upload them in a single pass, with a per-file progress bar and done/failed
+  status. Each file still streams to the server one request at a time (the
+  `POST /files` contract is unchanged), so multi-gigabyte wordlists never sit in
+  memory. Uploaded files appear immediately in the *Submit a job* wordlist/rule
+  pickers. Visible to **superadmin, admin, and operator** (the `Ingest`
+  capability).
+- **Per-upload capacity gauge.** The ingest panel shows a horizontal gauge of the
+  remaining capacity of the `/files` route's per-request limit (its
+  `DefaultBodyLimit`, 8 GiB). Because each file uploads in its own request, the
+  gauge plots the largest queued file against the ceiling and reports the
+  headroom, colour-shifting amber past 75% and red at/over the limit. A file at or
+  over the limit is flagged **too big** the moment it's queued and skipped on
+  upload (it would 413). The limit is surfaced to the dashboard from a single
+  source of truth (`MAX_FILE_UPLOAD_BYTES`, injected as `uploadLimit`), so the
+  gauge always matches the route. Purely client-side — no extra endpoint.
+- **Total-storage quota + gauge.** A second ingest-pane gauge shows the
+  cumulative size of all uploaded files against a new configurable quota
+  (`[hashcat].files_quota_bytes`, `0` = unlimited), with the physical disk volume
+  behind `data_dir/files` as a secondary context bar. When a quota is set, an
+  upload that would push the stored total past it is rejected with HTTP 507
+  (`insufficient_storage`); the quota bar colour-shifts amber past 75% and red at
+  the cap. New `GET /files/usage` → `StorageUsageView` (files total/count, quota,
+  disk total/free; `Ingest` capability). This is the cumulative-corpus cap,
+  distinct from the fixed 8 GiB per-request upload limit.
+- **OS-aware agent status icons.** Agents now report their operating system
+  (`std::env::consts::OS`) on the WebSocket `Hello` frame. The Agents panel shows
+  a Linux penguin (Tux) or a four-pane Windows glyph in place of the plain status
+  dot, faded and desaturated when the host is offline. Agents that enrolled
+  before this (OS not yet reported) fall back to the classic coloured dot until
+  they next reconnect. New `agents.os` column (migration `0008`); `os` added to
+  `AgentInfo` and the `Hello` message.
+
+### Changed
+- **Admin gains the `Ingest` capability.** So that the bulk-ingest panel works
+  for admins as well as superadmins and operators, the `Admin` role now holds
+  `Ingest` (on both the server capability model and the dashboard role map).
+  Admins still cannot submit jobs. No other role changes.
+
 ## [1.6.0] - 2026-11-23
 
 TLS: native HTTPS for the API and a Caddy option for automatic certificates.
