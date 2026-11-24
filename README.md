@@ -9,7 +9,7 @@ project workspace.
 
 ## Status
 
-**1.6.0** — current release. The Phase 1 single-box core (scheduler, keyspace
+**1.7.0** — current release. The Phase 1 single-box core (scheduler, keyspace
 chunking, ingest/SSE, RBAC), Phase 2 TUI/web dashboards + GPU/host telemetry,
 and Phase 3 distributed agents (enrollment, WebSocket task protocol, remote
 runner) are all in place, plus the work layered on since 1.0.0:
@@ -27,6 +27,12 @@ runner) are all in place, plus the work layered on since 1.0.0:
 - **TLS**: serve the API and dashboard over HTTPS from an enterprise certificate
   natively, or front them with Caddy for automatic Let's Encrypt — see
   [docs/guides/tls.md](docs/guides/tls.md).
+- **Bulk wordlist/rule ingest** from the dashboard: queue many files per
+  category and upload them in one pass, with per-file progress. Available to
+  superadmin, admin, and operator.
+- **OS-aware agent status**: agents report their operating system on connect, so
+  the Agents panel shows a Linux (Tux) or Windows glyph in place of a plain dot,
+  faded when the host is offline.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 

@@ -485,8 +485,9 @@ pub async fn list_agents(
         String,
         chrono::DateTime<chrono::Utc>,
         Option<chrono::DateTime<chrono::Utc>>,
+        Option<String>,
     )> = sqlx::query_as(
-        "SELECT id, name, status, enrolled_at, last_seen FROM agents ORDER BY enrolled_at",
+        "SELECT id, name, status, enrolled_at, last_seen, os FROM agents ORDER BY enrolled_at",
     )
     .fetch_all(&state.db)
     .await?;
@@ -496,7 +497,7 @@ pub async fn list_agents(
     let live = state.agents.live().await;
     Ok(Json(
         rows.into_iter()
-            .map(|(id, name, db_status, enrolled_at, last_seen)| {
+            .map(|(id, name, db_status, enrolled_at, last_seen, os)| {
                 let status = if db_status == "revoked" {
                     "error"
                 } else if let Some(l) = live.get(&id) {
@@ -516,6 +517,7 @@ pub async fn list_agents(
                     status: status.to_string(),
                     enrolled_at,
                     last_seen,
+                    os,
                 }
             })
             .collect(),
@@ -593,7 +595,7 @@ async fn handle_agent(socket: WebSocket, state: AppState) {
         Some(Ok(Message::Text(t))) => serde_json::from_str::<AgentMsg>(&t).ok(),
         _ => None,
     };
-    let Some(AgentMsg::Hello { name, cert_pem }) = hello else {
+    let Some(AgentMsg::Hello { name, cert_pem, os }) = hello else {
         let _ = sink
             .send(Message::Text(reject("expected hello frame")))
             .await;
@@ -634,11 +636,17 @@ async fn handle_agent(socket: WebSocket, state: AppState) {
         .agents
         .register(agent_id, name.clone(), tx.clone())
         .await;
-    let _ = sqlx::query("UPDATE agents SET status = 'online', last_seen = now() WHERE id = $1")
-        .bind(agent_id)
-        .execute(&state.db)
-        .await;
-    tracing::info!(%agent_id, %name, "agent connected");
+    // Record the agent's OS alongside the online transition. NULLIF keeps the
+    // stored value when a (pre-OS-reporting) agent sends a blank os.
+    let _ = sqlx::query(
+        "UPDATE agents SET status = 'online', last_seen = now(), \
+         os = COALESCE(NULLIF($2, ''), os) WHERE id = $1",
+    )
+    .bind(agent_id)
+    .bind(&os)
+    .execute(&state.db)
+    .await;
+    tracing::info!(%agent_id, %name, %os, "agent connected");
 
     while let Some(Ok(msg)) = stream.next().await {
         match msg {

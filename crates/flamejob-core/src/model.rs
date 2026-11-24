@@ -47,7 +47,10 @@ impl Role {
             ],
             // Admin manages users and agents; ViewJobs lets an admin see the
             // job queue they pin to agents (you can't pin what you can't see).
-            Role::Admin => &[ManageUsers, ManageAgents, ViewJobs, ManageSettings],
+            // Ingest lets an admin bulk-add wordlists/rules from the dashboard
+            // (the attack corpus is part of operating the fleet); admins still
+            // cannot submit jobs.
+            Role::Admin => &[ManageUsers, ManageAgents, ViewJobs, ManageSettings, Ingest],
             Role::Operator => &[SubmitJobs, Ingest, ViewPlaintext, ViewStats, ViewJobs],
             Role::Viewer => &[ViewStats, ViewJobs],
         }
@@ -135,6 +138,12 @@ mod tests {
         assert!(Role::Admin.has(Capability::ManageSettings));
         assert!(!Role::Operator.has(Capability::ManageSettings));
         assert!(!Role::Viewer.has(Capability::ManageSettings));
+        // Ingest (bulk-add wordlists/rules): superadmin, operator, and — as of the
+        // dashboard bulk-ingest area — admin; never viewer.
+        assert!(Role::Superadmin.has(Capability::Ingest));
+        assert!(Role::Operator.has(Capability::Ingest));
+        assert!(Role::Admin.has(Capability::Ingest));
+        assert!(!Role::Viewer.has(Capability::Ingest));
     }
 
     #[test]
