@@ -222,6 +222,55 @@
     text-align:center;line-height:1.2;font-size:13px;white-space:normal}
   .submit-square .sq-arrow{font-size:18px}
 
+  /* ---- bulk ingest (wordlists & rules) ---- */
+  .ingest-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:10px 12px}
+  .ingest-col{display:flex;flex-direction:column;gap:8px;min-width:0}
+  .ingest-col h3{margin:0;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);font-weight:600}
+  .ingest-col .drop{padding:14px 10px}
+  .ingest-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .ingest-actions .go{padding:6px 12px}
+  .ingest-actions button.ghost{background:var(--panel2);border:1px solid var(--border);color:var(--ink);border-radius:6px;padding:6px 10px;font-size:12px}
+  .ingest-actions button.ghost:hover{border-color:var(--accent);color:var(--accent)}
+  .ingest-actions button:disabled{opacity:.5;cursor:default}
+  .ingest-actions .sum{font-family:var(--mono);font-size:11px;color:var(--dim);margin-left:auto;text-align:right}
+  .filelist{list-style:none;margin:0;padding:0;max-height:168px;overflow:auto;display:flex;flex-direction:column;gap:3px}
+  .filelist:empty{display:none}
+  .filelist li{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:11px;
+    background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:4px 8px}
+  .filelist li .fn{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .filelist li .sz{color:var(--dim);flex:0 0 auto}
+  .filelist li .st{flex:0 0 auto;font-size:10px;text-transform:uppercase;letter-spacing:.04em}
+  .filelist li.ok .st{color:var(--good)} .filelist li.err .st{color:var(--bad)}
+  .filelist li.up .st{color:var(--accent)} .filelist li.wait .st{color:var(--dim)}
+  .filelist li.toobig{border-color:var(--bad)} .filelist li.toobig .st{color:var(--bad)} .filelist li.toobig .sz{color:var(--bad)}
+  .filelist li .mini{flex:0 0 64px;height:5px;background:var(--track);border-radius:3px;overflow:hidden}
+  .filelist li .mini>i{display:block;height:100%;width:0;background:var(--accent);transition:width .2s ease}
+  .filelist li .rm{flex:0 0 auto;cursor:pointer;color:var(--dim);border:none;background:none;font-size:14px;line-height:1;padding:0 2px}
+  .filelist li .rm:hover{color:var(--bad)}
+
+  /* ---- per-upload capacity gauge (ingest pane): largest queued file vs the
+     /files route's per-request DefaultBodyLimit ---- */
+  .storage-gauge{padding:2px 12px 12px}
+  .sg-head{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:5px}
+  .sg-label{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim)}
+  .sg-nums{font-family:var(--mono);font-size:11px;color:var(--ink)}
+  .sg-nums .pctbig{font-weight:700} .sg-nums .free{color:var(--dim)}
+  .sg-track{position:relative;height:14px;background:var(--track);border-radius:7px;overflow:hidden}
+  .sg-fill{position:absolute;top:0;left:0;height:100%;background:var(--good);transition:width .4s ease,background .3s}
+  .sg-fill.warn{background:var(--warn)} .sg-fill.bad{background:var(--bad)}
+  .sg-fill.disk{background:var(--accent);opacity:.65}
+  .sg-sub{margin-top:4px;font-family:var(--mono);font-size:10px;color:var(--dim)}
+  /* secondary (disk-context) row inside the total-storage gauge */
+  .sg-head2{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin:8px 0 3px}
+  .sg-label2{font-size:9px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim)}
+  .sg-nums2{font-family:var(--mono);font-size:10px;color:var(--dim)}
+  .sg-track-sm{height:8px;border-radius:4px}
+  #totalGauge{border-bottom:1px solid var(--border)}
+
+  /* ---- agent OS status icon (replaces the plain status dot) ---- */
+  .ag .osicon{width:16px;height:16px;flex:none;display:inline-block;vertical-align:middle}
+  .ag .osicon.offline{opacity:.32;filter:grayscale(1)}
+
   .bar-wrap{display:flex;align-items:center;gap:8px}
   .bar-track{flex:1;height:8px;background:var(--track);border-radius:5px;overflow:hidden;min-width:60px}
   .bar-fill{height:100%;background:var(--accent);border-radius:5px;transition:width .4s ease}
@@ -487,6 +536,11 @@
       </section>
     </div>
 
+    <section class="panel" id="ingestPanel" style="grid-column:1 / -1;display:none">
+      <div class="head"><span class="t">Ingest wordlists &amp; rules</span><span class="dim" id="ingestNote">bulk-add files once, then pick them in Submit a job</span></div>
+      <div class="body" id="ingestBody"></div>
+    </section>
+
     <section class="panel" id="agentsPanel" style="grid-column:1 / -1;display:none">
       <div class="head"><span class="t">Agents</span><span class="dim" id="agNote"></span></div>
       <div class="body">
@@ -516,14 +570,14 @@
 
 <script>
 "use strict";
-const CFG = Object.assign({apiBase:null, apiPort:8443, theme:"dark", version:""}, "__FJCFG__");
+const CFG = Object.assign({apiBase:null, apiPort:8443, theme:"dark", version:"", uploadLimit:8589934592}, "__FJCFG__");
 // Build version, centred in the footer (injected by the server from CARGO_PKG_VERSION).
 document.getElementById("verTag").textContent = CFG.version ? ("v"+CFG.version) : "";
 
 // ---- role -> capability map (mirrors flamejob-core::model) ----
 const ROLE_CAPS = {
   superadmin:["manage_users","submit_jobs","ingest","view_plaintext","view_stats","view_jobs","manage_directory","view_directory_config","manage_agents","manage_settings"],
-  admin:["manage_users","manage_agents","view_jobs","manage_settings","view_directory_config"],
+  admin:["manage_users","manage_agents","view_jobs","manage_settings","ingest","view_directory_config"],
   operator:["submit_jobs","ingest","view_plaintext","view_stats","view_jobs"],
   viewer:["view_stats","view_jobs"],
 };
@@ -672,6 +726,10 @@ function gatePanels(){
   const canSubmit = can("submit_jobs");
   document.getElementById("submitPanel").style.display = canSubmit ? "flex":"none";
   if(canSubmit) renderSubmit();
+  // Bulk ingest of wordlists/rules — superadmin, admin, operator (Ingest).
+  const canIngest = can("ingest");
+  document.getElementById("ingestPanel").style.display = canIngest ? "flex":"none";
+  if(canIngest) renderIngest();
   // The mid region holds Submit (left) + Devices (right); collapse to one column
   // when only one of them is visible, and hide the whole region when neither is.
   const midPanels = (canSubmit?1:0) + (showStats?1:0);
@@ -712,6 +770,7 @@ async function tick(){
     }
     if(can("view_stats")) renderDevices(await api("/devices"));
     if(can("view_stats")) renderAgents(await api("/agents"));
+    if(can("ingest")) refreshStorage(); // throttled internally (~8s)
     if(can("view_jobs") && S.selected && S.selJob){
       // Archived (history) selections only have cracked plaintext — no live tasks.
       if(S.selIsHist || S.detailView==="cracked") loadCracked(S.selJob.hashlist_id);
@@ -956,11 +1015,39 @@ document.getElementById("devicesTitle").onclick=()=>{
   renderDevices(LAST_DEVS);
 };
 
-// Agent status dot + styled name. online=green bold, away=gray italic,
+// OS glyph that replaces the plain status dot next to an agent. Linux agents get
+// a Tux (penguin) head; Windows agents get the four-pane logo (brand blue). The
+// caller passes "offline" as `extra` to fade + desaturate a host that isn't
+// currently connected. Returns null for an unknown/unreported OS so the caller
+// can fall back to the classic coloured status dot.
+function osGlyph(os, extra){
+  const o = (os||"").toLowerCase();
+  const c = "osicon" + (extra ? " "+extra : "");
+  if(o==="windows"){
+    return `<svg class="${c} win" viewBox="0 0 16 16" aria-hidden="true"><g fill="#3b9cf0">`+
+      `<rect x="1" y="1" width="6.3" height="6.3" rx="0.8"/><rect x="8.7" y="1" width="6.3" height="6.3" rx="0.8"/>`+
+      `<rect x="1" y="8.7" width="6.3" height="6.3" rx="0.8"/><rect x="8.7" y="8.7" width="6.3" height="6.3" rx="0.8"/></g></svg>`;
+  }
+  if(o==="linux"){
+    return `<svg class="${c} tux" viewBox="0 0 16 16" aria-hidden="true">`+
+      `<path fill="#161616" d="M8 1.3c2.2 0 3.6 1.9 3.6 4.4 0 1.1.5 1.8 1 2.5.6.8 1.2 1.6 1.2 3 0 2.3-2.7 3.5-5.8 3.5S2.2 13.5 2.2 11.2c0-1.4.6-2.2 1.2-3 .5-.7 1-1.4 1-2.5C4.4 3.2 5.8 1.3 8 1.3z"/>`+
+      `<ellipse cx="8" cy="9.9" rx="2.8" ry="3.2" fill="#f6f6f6"/>`+
+      `<ellipse cx="6.5" cy="5.7" rx="1.2" ry="1.4" fill="#fff"/><ellipse cx="9.5" cy="5.7" rx="1.2" ry="1.4" fill="#fff"/>`+
+      `<circle cx="6.7" cy="5.9" r=".5" fill="#161616"/><circle cx="9.3" cy="5.9" r=".5" fill="#161616"/>`+
+      `<path fill="#f3a941" d="M8 5.8l1.4 1c0 .5-.6.9-1.4.9s-1.4-.4-1.4-.9L8 5.8z"/></svg>`;
+  }
+  return null;
+}
+// Agent status marker + styled name. online=green bold, away=gray italic,
 // error=red bold underline, busy=orange bold (multi-slot agent near overload).
-function agentDot(status, name){
+// The leading marker is the OS glyph (faded when offline) when the agent's OS is
+// known, otherwise the classic coloured status dot.
+function agentDot(status, name, os){
   const cls = {online:"ag-online",away:"ag-away",error:"ag-error",busy:"ag-busy"}[status] || "ag-away";
-  return `<span class="ag ${cls}"><span class="dot"></span><span class="nm">${esc(name)}</span></span>`;
+  const active = status==="online" || status==="busy";
+  const marker = osGlyph(os, active ? "" : "offline") || `<span class="dot"></span>`;
+  const tip = (os ? os.toLowerCase() : "os unknown") + " · " + status + (active ? "" : " (offline)");
+  return `<span class="ag ${cls}" title="${esc(tip)}">${marker}<span class="nm">${esc(name)}</span></span>`;
 }
 function renderAgents(agents){
   const online = agents.filter(a=>a.status==="online"||a.status==="busy").length;
@@ -968,7 +1055,7 @@ function renderAgents(agents){
   const body=document.getElementById("agBody");
   if(!agents.length){ body.innerHTML=`<tr><td colspan="4" class="empty">no agents enrolled</td></tr>`; return; }
   body.innerHTML = agents.map(a=>`<tr>
-    <td>${agentDot(a.status, a.name)}</td><td class="dim mono">${esc(a.status)}</td>
+    <td>${agentDot(a.status, a.name, a.os)}</td><td class="dim mono">${esc(a.status)}</td>
     <td class="dim num">${a.enrolled_at?new Date(a.enrolled_at).toLocaleString():"—"}</td>
     <td class="dim num">${a.last_seen?new Date(a.last_seen).toLocaleString():"—"}</td></tr>`).join("");
 }
@@ -1103,6 +1190,238 @@ async function loadFileOptions(){
     r.innerHTML = `<option value="">(none)</option>`+rl.map(f=>`<option value="${f.id}">${esc(f.name)}</option>`).join("");
   }catch(e){}
 }
+
+// ---- bulk ingest of wordlists & rules (Superadmin / Admin / Operator) ----
+// The /files endpoint streams ONE file to disk per request, so the dashboard
+// fans a multi-file selection out into one POST each. That keeps even multi-GB
+// wordlists off the heap and gives per-file success/failure + progress. State
+// is kept per kind ("wordlist" | "rule").
+const INGEST = { wordlist:{ files:[], busy:false }, rule:{ files:[], busy:false } };
+function renderIngest(){
+  const b=document.getElementById("ingestBody");
+  if(b.dataset.built) return; // build once; keep a partly-filled queue across ticks
+  b.dataset.built="1";
+  b.innerHTML = `
+    <div class="storage-gauge" id="totalGauge" title="Total size of all uploaded files vs the configured quota, with the disk volume for context.">
+      <div class="sg-head"><span class="sg-label">Total upload storage</span><span class="sg-nums" id="tgNums"><span class="dim">reading…</span></span></div>
+      <div class="sg-track"><div class="sg-fill" id="tgFill" style="width:0%"></div></div>
+      <div class="sg-head2"><span class="sg-label2" id="tgDiskLabel">disk</span><span class="sg-nums2" id="tgDiskNums"></span></div>
+      <div class="sg-track sg-track-sm"><div class="sg-fill disk" id="tgDisk" style="width:0%"></div></div>
+    </div>
+    <div class="storage-gauge" id="limitGauge" title="Each file uploads in its own request; the /files route caps a request at this size.">
+      <div class="sg-head"><span class="sg-label">Per-upload capacity (/files limit)</span><span class="sg-nums" id="lgNums"></span></div>
+      <div class="sg-track"><div class="sg-fill" id="lgFill" style="width:0%"></div></div>
+      <div class="sg-sub" id="lgSub"></div>
+    </div>
+    <div class="ingest-grid">
+      ${ingestColHTML("wordlist","Wordlists","drop .txt / .lst / .dict / .gz — or any file")}
+      ${ingestColHTML("rule","Rules","drop hashcat .rule lists")}
+    </div>`;
+  ingestWire("wordlist"); ingestWire("rule");
+  renderLimitGauge();
+  refreshStorage();
+}
+// Total-storage gauge: cumulative size of ALL uploaded files vs the configured
+// quota (`files_quota_bytes`; 0 = unlimited), with the physical disk volume as a
+// secondary context bar. Needs a server call (DB sum + disk sample), so it's
+// throttled on the tick and forced after an upload. Distinct from the per-upload
+// (per-request) gauge above.
+let STORAGE_AT = 0;
+async function refreshStorage(force){
+  const g=document.getElementById("totalGauge");
+  if(!g) return;
+  const now=Date.now();
+  if(!force && now-STORAGE_AT < 8000) return;
+  STORAGE_AT = now;
+  try{
+    const u=await api("/files/usage");
+    const used=+u.files_bytes||0, cnt=+u.file_count||0, quota=+u.quota_bytes||0;
+    const dTot=+u.disk_total_bytes||0, dAvail=+u.disk_available_bytes||0, dUsed=Math.max(0,dTot-dAvail);
+    const fill=document.getElementById("tgFill"), nums=document.getElementById("tgNums");
+    const countTxt = `${cnt} file(s)`;
+    if(quota>0){
+      const pct=Math.min(100, Math.round(used/quota*100));
+      fill.style.width=pct+"%";
+      fill.classList.toggle("warn", pct>=75 && pct<100);
+      fill.classList.toggle("bad", pct>=100);
+      const rem=Math.max(0, quota-used);
+      nums.innerHTML=`<span class="pctbig">${pct}%</span> · ${fmtBytesBin(used)} / ${fmtBytesBin(quota)} <span class="free">· ${fmtBytesBin(rem)} left · ${countTxt}</span>`;
+    } else {
+      // No quota configured — plot uploads against the physical disk instead.
+      const pct = dTot>0 ? Math.min(100, Math.round(used/dTot*100)) : 0;
+      fill.style.width=pct+"%";
+      fill.classList.remove("warn","bad");
+      nums.innerHTML=`<span class="pctbig">${fmtBytesBin(used)}</span> used <span class="free">· no quota set (bounded by disk) · ${countTxt}</span>`;
+    }
+    // Secondary disk-context bar.
+    const dwrapHead=document.getElementById("tgDiskLabel").parentElement;
+    const dwrapTrack=document.getElementById("tgDisk").parentElement;
+    if(dTot>0){
+      dwrapHead.style.display=""; dwrapTrack.style.display="";
+      const dpct=Math.min(100, Math.round(dUsed/dTot*100));
+      document.getElementById("tgDisk").style.width=dpct+"%";
+      document.getElementById("tgDiskLabel").textContent = quota>0 ? "disk volume (context)" : "disk volume";
+      document.getElementById("tgDiskNums").textContent = `${dpct}% · ${fmtBytesBin(dUsed)} / ${fmtBytesBin(dTot)} · ${fmtBytesBin(dAvail)} free`;
+    } else {
+      dwrapHead.style.display="none"; dwrapTrack.style.display="none";
+    }
+  }catch(e){
+    const nums=document.getElementById("tgNums"); if(nums) nums.innerHTML=`<span class="dim">usage unavailable</span>`;
+  }
+}
+// Gauge of the /files route's per-request ceiling (DefaultBodyLimit, surfaced as
+// CFG.uploadLimit). Each file uploads in its own request, so the binding number
+// is the LARGEST file currently queued: the bar plots it against the limit and
+// the readout shows the remaining headroom. A file at/over the limit is drawn
+// red — it would be rejected (413) — and is flagged + skipped at queue time too.
+// Pure client-side: file sizes + a known constant, no server round-trip.
+function uploadLimitBytes(){ const n=+CFG.uploadLimit; return (n>0)?n:8589934592; }
+function renderLimitGauge(){
+  const gauge=document.getElementById("limitGauge");
+  if(!gauge) return;
+  const L=uploadLimitBytes();
+  const fill=document.getElementById("lgFill"), nums=document.getElementById("lgNums"), sub=document.getElementById("lgSub");
+  // Largest file across both queues that still has to go over the wire.
+  let biggest=0, biggestName="", nActive=0, nOver=0;
+  for(const kind of ["wordlist","rule"]){
+    for(const it of INGEST[kind].files){
+      if(it.status==="ok") continue;
+      nActive++;
+      if(it.file.size>=L) nOver++;
+      if(it.file.size>biggest){ biggest=it.file.size; biggestName=it.file.name; }
+    }
+  }
+  const pct=Math.min(100, Math.round(biggest/L*100));
+  const over=biggest>=L;
+  fill.style.width=pct+"%";
+  fill.classList.toggle("warn", !over && pct>=75);
+  fill.classList.toggle("bad", over);
+  if(biggest>0){
+    const headroom=L-biggest;
+    nums.innerHTML = over
+      ? `<span class="pctbig" style="color:var(--bad)">over limit</span> · ${fmtBytesBin(biggest)} / ${fmtBytesBin(L)}`
+      : `<span class="pctbig">${pct}%</span> · ${fmtBytesBin(biggest)} / ${fmtBytesBin(L)} <span class="free">· ${fmtBytesBin(headroom)} headroom</span>`;
+    const over1 = nOver===1 ? "1 file exceeds the limit — it will be rejected"
+                 : nOver>1 ? `${nOver} files exceed the limit — they will be rejected` : "";
+    sub.innerHTML = `largest of ${nActive} queued: ${esc(biggestName)}` + (over1?` · <span style="color:var(--bad)">${over1}</span>`:"");
+  } else {
+    fill.style.width="0%";
+    nums.innerHTML = `<span class="pctbig">0%</span> · ${fmtBytesBin(L)} free per upload`;
+    sub.textContent = `no files queued · each request may carry up to ${fmtBytesBin(L)}`;
+  }
+}
+function ingestColHTML(kind, title, hint){
+  return `<div class="ingest-col" data-kind="${kind}">
+    <h3>${esc(title)}</h3>
+    <div class="drop" id="drop-${kind}">Drop ${esc(title.toLowerCase())} here, or click to choose (multiple)
+      <input type="file" id="pick-${kind}" multiple style="display:none"></div>
+    <ul class="filelist" id="list-${kind}"></ul>
+    <div class="ingest-actions">
+      <button class="go" id="up-${kind}" disabled>Upload all</button>
+      <button class="ghost" id="clr-${kind}" disabled>Clear</button>
+      <span class="sum" id="sum-${kind}">${esc(hint)}</span>
+    </div>
+  </div>`;
+}
+function ingestWire(kind){
+  const drop=document.getElementById("drop-"+kind), pick=document.getElementById("pick-"+kind);
+  drop.onclick=()=>pick.click();
+  drop.ondragover=e=>{e.preventDefault();drop.classList.add("hover");};
+  drop.ondragleave=()=>drop.classList.remove("hover");
+  drop.ondrop=e=>{e.preventDefault();drop.classList.remove("hover");ingestAdd(kind,e.dataTransfer.files);};
+  pick.onchange=()=>{ ingestAdd(kind,pick.files); pick.value=""; };
+  document.getElementById("up-"+kind).onclick=()=>ingestUploadAll(kind);
+  document.getElementById("clr-"+kind).onclick=()=>{ if(INGEST[kind].busy) return; INGEST[kind].files=[]; ingestRender(kind); };
+}
+function ingestAdd(kind, fileList){
+  const st=INGEST[kind], L=uploadLimitBytes();
+  for(const f of fileList){
+    // De-dupe by name+size so a double-drop (or re-pick) doesn't queue twice.
+    if(st.files.some(x=>x.file.name===f.name && x.file.size===f.size && x.status!=="err")) continue;
+    // Flag a file that can't fit the /files per-request limit up front, so it's
+    // never sent (the server would 413 it); it still shows in the gauge.
+    const over=f.size>=L;
+    st.files.push({file:f, status:over?"toobig":"wait", pct:0, msg:over?`exceeds the ${fmtBytesBin(L)} per-request limit`:""});
+  }
+  ingestRender(kind);
+}
+function ingestRender(kind){
+  const st=INGEST[kind], list=document.getElementById("list-"+kind);
+  if(!list) return;
+  list.innerHTML = st.files.map((it,i)=>{
+    const label = {wait:"queued",up:it.pct+"%",ok:"done",err:"failed",toobig:"too big"}[it.status]||"";
+    const prog = it.status==="up" ? `<span class="mini"><i style="width:${it.pct}%"></i></span>` : "";
+    const rm = it.status==="up" ? "" : `<button class="rm" title="remove" data-i="${i}">✕</button>`;
+    return `<li class="${it.status}"><span class="fn" title="${esc(it.file.name)}${it.msg?" — "+esc(it.msg):""}">${esc(it.file.name)}</span>`+
+      `<span class="sz">${fmtBytesBin(it.file.size)}</span>${prog}<span class="st">${esc(label)}</span>${rm}</li>`;
+  }).join("");
+  [...list.querySelectorAll(".rm")].forEach(btn=>btn.onclick=()=>{
+    if(st.busy) return; st.files.splice(+btn.getAttribute("data-i"),1); ingestRender(kind);
+  });
+  const pending = st.files.filter(x=>x.status==="wait"||x.status==="err").length;
+  const done = st.files.filter(x=>x.status==="ok").length;
+  const over = st.files.filter(x=>x.status==="toobig").length;
+  document.getElementById("up-"+kind).disabled  = st.busy || pending===0;
+  document.getElementById("clr-"+kind).disabled = st.busy || st.files.length===0;
+  const sum=document.getElementById("sum-"+kind);
+  if(st.files.length) sum.textContent = `${st.files.length} file(s) · ${done} done · ${pending} pending`+(over?` · ${over} too big`:"");
+  renderLimitGauge(); // the queue changed → refresh the per-request-capacity gauge
+}
+async function ingestUploadAll(kind){
+  const st=INGEST[kind];
+  if(st.busy) return;
+  st.busy=true; ingestRender(kind);
+  for(const it of st.files){
+    if(it.status==="ok") continue;
+    if(it.status==="toobig") continue; // over the /files per-request limit — never sent
+    it.status="up"; it.pct=0; it.msg=""; ingestRender(kind);
+    try{
+      await uploadFileXHR(it.file, kind, p=>{ it.pct=Math.round(p*100); ingestRender(kind); });
+      it.status="ok";
+    }catch(err){
+      it.status="err"; it.msg = (err && err.message) ? err.message : "upload failed";
+    }
+    ingestRender(kind);
+  }
+  st.busy=false; ingestRender(kind);
+  // Surface the new files in the Submit-a-job pickers immediately.
+  if(document.getElementById("wordlist")) loadFileOptions();
+  refreshStorage(true); // total corpus changed — refresh the storage gauge now
+  const ok=st.files.filter(x=>x.status==="ok").length, bad=st.files.filter(x=>x.status==="err").length;
+  flash(`${kind}s: ${ok} uploaded${bad?`, ${bad} failed`:""}`, bad>0);
+}
+// Upload one file via XHR so we get upload-progress events (fetch can't report
+// request-body progress). Mirrors api(): bearer token, same base, 401 => logout.
+function uploadFileXHR(file, kind, onProgress){
+  return new Promise((resolve,reject)=>{
+    const fd=new FormData();
+    fd.append("kind", kind);
+    fd.append("file", file, file.name);
+    const xhr=new XMLHttpRequest();
+    xhr.open("POST", apiBase()+"/files");
+    if(S.token) xhr.setRequestHeader("Authorization","Bearer "+S.token);
+    if(xhr.upload) xhr.upload.onprogress=e=>{ if(e.lengthComputable && onProgress) onProgress(e.loaded/e.total); };
+    xhr.onload=()=>{
+      if(xhr.status>=200 && xhr.status<300){ resolve(); return; }
+      if(xhr.status===401){ logout(); reject(new Error("session expired")); return; }
+      let detail="";
+      try{ const j=JSON.parse(xhr.responseText); detail=j.detail||j.title||j.message||""; }catch{ detail=(xhr.responseText||"").slice(0,120); }
+      if(xhr.status===413) detail = detail || "file too large (8 GiB max)";
+      if(xhr.status===403) detail = detail || "your role isn't allowed to ingest";
+      reject(new Error(detail || ("HTTP "+xhr.status)));
+    };
+    xhr.onerror=()=>reject(new Error("network error"));
+    xhr.send(fd);
+  });
+}
+function fmtBytes(n){ n=+n||0;
+  if(n>=1e9)return (n/1e9).toFixed(1)+" GB"; if(n>=1e6)return (n/1e6).toFixed(1)+" MB";
+  if(n>=1e3)return (n/1e3).toFixed(1)+" kB"; return n+" B"; }
+// Binary units (GiB/MiB/KiB) for the ingest pane, so file sizes and the
+// per-request limit read against the same 2^30 scale the 8 GiB cap is set in.
+function fmtBytesBin(n){ n=+n||0;
+  if(n>=1073741824)return (n/1073741824).toFixed(1)+" GiB"; if(n>=1048576)return (n/1048576).toFixed(1)+" MiB";
+  if(n>=1024)return (n/1024).toFixed(1)+" KiB"; return n+" B"; }
 async function submitJob(){
   const out=document.getElementById("submitOut"); out.style.color="var(--bad)";
   if(!SUBMIT_FILE.text){ out.textContent="Choose a hash file first."; return; }
