@@ -100,6 +100,7 @@ flamejob reads configuration from three layers, in increasing precedence: built-
 | `[hashcat]` | `binary` | `/usr/bin/hashcat` | hashcat executable. |
 | `[hashcat]` | `data_dir` | `/var/lib/flamejob` | Working data: uploaded files, PKI, job scratch. |
 | `[hashcat]` | `workload` | `3` | hashcat workload profile (1–4). |
+| `[hashcat]` | `files_quota_bytes` | `0` | Soft cap on the total size of all uploaded files, in bytes (`0` = unlimited). An upload that would exceed it is rejected with HTTP 507; the dashboard's total-storage gauge fills toward it. Separate from the fixed 8 GiB per-request upload limit. |
 | `[crypto]` | `plaintext_key_file` | *(none)* | Key file for encrypting cracked plaintext. |
 | `[scheduler]` | `chunk_size` | `50000000` | Keyspace units per chunk; `0` / unknown = one task. |
 | `[scheduler]` | `max_chunks` | `500` | Upper bound on chunks per job. |

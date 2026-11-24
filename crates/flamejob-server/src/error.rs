@@ -11,6 +11,9 @@ pub enum AppError {
     BadRequest(String),
     /// Quota/rate backpressure (e.g. a group's max concurrent submitted jobs).
     TooManyRequests(String),
+    /// Request well-formed but can't be stored — e.g. the upload would push the
+    /// total file corpus past the configured quota. Maps to 507.
+    InsufficientStorage(String),
     Internal(String),
 }
 
@@ -24,6 +27,11 @@ impl AppError {
             AppError::TooManyRequests(m) => (
                 StatusCode::TOO_MANY_REQUESTS,
                 "too_many_requests",
+                m.clone(),
+            ),
+            AppError::InsufficientStorage(m) => (
+                StatusCode::INSUFFICIENT_STORAGE,
+                "insufficient_storage",
                 m.clone(),
             ),
             AppError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, "internal", m.clone()),
