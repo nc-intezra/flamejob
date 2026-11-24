@@ -329,49 +329,120 @@ impl Scheduler {
         }
     }
 
-    /// Distribute the fleet's chunk capacity across all admitted jobs: each pass
-    /// starts one pending chunk from every running job in priority order, until
-    /// the in-flight total reaches `Runner::capacity` or no pending chunks remain.
+    /// Distribute the fleet's chunk capacity across all admitted jobs using
+    /// weighted fair-share across the owning directory groups (PR3): each free
+    /// slot goes to the fairest group's next job (see `crate::fairness`), which
+    /// for a single ungrouped tenant degenerates to the previous per-job
+    /// round-robin. Stops at `Runner::capacity`, when nothing is pending, or when
+    /// every eligible group is at its ceiling.
     async fn fill_fleet(self: &Arc<Self>) {
         let want = self.runner.capacity().await.max(1);
+        let quotas = self.load_quotas().await;
         loop {
             if self.inflight.lock().await.len() >= want {
                 break;
             }
-            let jobs = self.fillable_jobs().await;
-            if jobs.is_empty() {
+
+            // In-flight chunk counts per job and per owning group, from the live
+            // in-memory dispatch map (authoritative for what the scheduler has
+            // placed), mapped to groups via the active jobs' owner_group_sid.
+            let job_group = self.active_group_map().await;
+            let (if_job, if_group) = {
+                let inflight = self.inflight.lock().await;
+                let mut ij: HashMap<Uuid, i64> = HashMap::new();
+                for v in inflight.values() {
+                    *ij.entry(v.job_id).or_insert(0) += 1;
+                }
+                let mut ig: HashMap<String, i64> = HashMap::new();
+                for (job, n) in &ij {
+                    let g = job_group.get(job).cloned().unwrap_or_default();
+                    *ig.entry(g).or_insert(0) += n;
+                }
+                (ij, ig)
+            };
+
+            // Candidates: running jobs with a pending chunk AND ready inputs.
+            let rows = self.fillable_candidate_rows().await;
+            let cands: Vec<crate::fairness::Candidate> = {
+                let ready = self.inputs.lock().await;
+                rows.into_iter()
+                    .filter(|(id, _, _, _)| ready.contains_key(id))
+                    .map(
+                        |(id, group, priority, created_at)| crate::fairness::Candidate {
+                            job_id: id,
+                            group,
+                            priority,
+                            created_at,
+                            in_flight_job: *if_job.get(&id).unwrap_or(&0),
+                        },
+                    )
+                    .collect()
+            };
+            if cands.is_empty() {
                 break;
             }
-            let mut started_any = false;
-            for job_id in jobs {
-                if self.inflight.lock().await.len() >= want {
-                    break;
-                }
-                if !self.inputs.lock().await.contains_key(&job_id) {
-                    continue; // admitted but inputs not ready yet
-                }
-                if let Some((task_id, off, len)) = self.next_pending_chunk(job_id).await {
-                    if self.start_chunk(job_id, task_id, off, len).await {
-                        started_any = true;
+
+            let Some(job_id) = crate::fairness::select_job(&cands, &if_group, &quotas) else {
+                break; // every eligible group is at its ceiling
+            };
+            match self.next_pending_chunk(job_id).await {
+                Some((task_id, off, len)) => {
+                    if !self.start_chunk(job_id, task_id, off, len).await {
+                        break;
                     }
                 }
-            }
-            if !started_any {
-                break;
+                None => break,
             }
         }
     }
 
-    /// Running jobs that still have a pending chunk, in priority order.
-    async fn fillable_jobs(&self) -> Vec<Uuid> {
-        sqlx::query_scalar(
-            "SELECT j.id FROM jobs j WHERE j.state = 'running' \
-             AND EXISTS (SELECT 1 FROM tasks t WHERE t.job_id = j.id AND t.state = 'pending') \
-             ORDER BY j.priority, j.created_at",
+    /// owner group SID (``"" `` = ungrouped) for every active job, for in-flight
+    /// accounting.
+    async fn active_group_map(&self) -> HashMap<Uuid, String> {
+        let rows: Vec<(Uuid, String)> = sqlx::query_as(
+            "SELECT id, COALESCE(owner_group_sid, '') FROM jobs \
+             WHERE state IN ('running','assigned')",
+        )
+        .fetch_all(&self.state.db)
+        .await
+        .unwrap_or_default();
+        rows.into_iter().collect()
+    }
+
+    /// Running jobs that still have a pending chunk, with their group, priority
+    /// and creation epoch (for the fair-share selector).
+    async fn fillable_candidate_rows(&self) -> Vec<(Uuid, String, i32, i64)> {
+        sqlx::query_as(
+            "SELECT j.id, COALESCE(j.owner_group_sid, ''), j.priority, \
+                    EXTRACT(EPOCH FROM j.created_at)::bigint \
+             FROM jobs j WHERE j.state = 'running' \
+             AND EXISTS (SELECT 1 FROM tasks t WHERE t.job_id = j.id AND t.state = 'pending')",
         )
         .fetch_all(&self.state.db)
         .await
         .unwrap_or_default()
+    }
+
+    /// Per-group fair-share policy from `group_quota` (groups without a row use
+    /// the defaults via the selector).
+    async fn load_quotas(&self) -> HashMap<String, crate::fairness::Quota> {
+        let rows: Vec<(String, i32, i32, Option<i32>)> =
+            sqlx::query_as("SELECT group_sid, weight, floor_slots, ceil_slots FROM group_quota")
+                .fetch_all(&self.state.db)
+                .await
+                .unwrap_or_default();
+        rows.into_iter()
+            .map(|(sid, w, fl, cl)| {
+                (
+                    sid,
+                    crate::fairness::Quota {
+                        weight: (w as f64).max(1.0),
+                        floor: fl as i64,
+                        ceil: cl.map(|c| c as i64),
+                    },
+                )
+            })
+            .collect()
     }
 
     async fn prepare_inputs(

@@ -357,6 +357,22 @@ pub struct DirectoryGrantEntry {
     pub group_cn: Option<String>,
 }
 
+/// Per-group fair-share weight + quotas (PR3). Omit a group to use defaults
+/// (weight 100, no floor, no ceiling, no submit cap).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct GroupQuotaEntry {
+    pub group_sid: String,
+    /// Relative share of contested capacity (higher ⇒ more concurrent chunks).
+    pub weight: i32,
+    /// Guaranteed concurrent chunks.
+    pub floor_slots: i32,
+    /// Burst ceiling on concurrent chunks (null = uncapped).
+    pub ceil_slots: Option<i32>,
+    /// Max queued+running jobs for the group (null = unlimited).
+    pub max_submit_jobs: Option<i32>,
+    pub group_cn: Option<String>,
+}
+
 /// RFC 7807 problem+json error body.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Problem {
@@ -510,6 +526,7 @@ impl Event {
         PoolCreate,
         PoolMemberUpdate,
         DirectoryGrantEntry,
+        GroupQuotaEntry,
         Problem,
         Event,
         DeviceView,

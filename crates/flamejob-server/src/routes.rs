@@ -97,6 +97,12 @@ pub fn router(state: AppState) -> Router {
                 .delete(crate::directory::routes::remove_grant),
         )
         .route(
+            "/admin/directory/quotas",
+            get(crate::directory::routes::list_quotas)
+                .put(crate::directory::routes::put_quota)
+                .delete(crate::directory::routes::delete_quota),
+        )
+        .route(
             "/admin/pools",
             get(crate::pools::list_pools).post(crate::pools::create_pool),
         )
@@ -427,6 +433,28 @@ async fn create_job(
     // pool once pools exist; unrestricted for local users / no-pools deployments.
     let (owner_group_sid, eligible_pool_ids) =
         crate::pools::compute_eligibility(&state, auth.id).await?;
+    // Per-group submit backpressure (PR3): cap a group's queued+running jobs.
+    if let Some(g) = &owner_group_sid {
+        let max: Option<Option<i32>> =
+            sqlx::query_scalar("SELECT max_submit_jobs FROM group_quota WHERE group_sid = $1")
+                .bind(g)
+                .fetch_optional(&state.db)
+                .await?;
+        if let Some(Some(m)) = max {
+            let active: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM jobs WHERE owner_group_sid = $1 \
+                 AND state IN ('queued','assigned','running')",
+            )
+            .bind(g)
+            .fetch_one(&state.db)
+            .await?;
+            if active >= m as i64 {
+                return Err(AppError::TooManyRequests(format!(
+                    "your group's submit limit is reached ({m} queued/running jobs) — wait for one to finish"
+                )));
+            }
+        }
+    }
     sqlx::query(
         "INSERT INTO jobs (id, name, owner_user_id, hashlist_id, attack_mode, config, priority, \
                            owner_group_sid, eligible_pool_ids) \

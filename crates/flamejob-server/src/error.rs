@@ -9,6 +9,8 @@ pub enum AppError {
     Forbidden(String),
     NotFound(String),
     BadRequest(String),
+    /// Quota/rate backpressure (e.g. a group's max concurrent submitted jobs).
+    TooManyRequests(String),
     /// Request well-formed but can't be stored — e.g. the upload would push the
     /// total file corpus past the configured quota. Maps to 507.
     InsufficientStorage(String),
@@ -22,6 +24,11 @@ impl AppError {
             AppError::Forbidden(m) => (StatusCode::FORBIDDEN, "forbidden", m.clone()),
             AppError::NotFound(m) => (StatusCode::NOT_FOUND, "not_found", m.clone()),
             AppError::BadRequest(m) => (StatusCode::BAD_REQUEST, "bad_request", m.clone()),
+            AppError::TooManyRequests(m) => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "too_many_requests",
+                m.clone(),
+            ),
             AppError::InsufficientStorage(m) => (
                 StatusCode::INSUFFICIENT_STORAGE,
                 "insufficient_storage",

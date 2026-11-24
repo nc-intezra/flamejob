@@ -6,6 +6,7 @@ mod config;
 mod crypto;
 mod directory;
 mod error;
+mod fairness;
 mod metrics;
 mod openapi;
 mod pki;
