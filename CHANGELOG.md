@@ -4,6 +4,55 @@ All notable changes to flamejob are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-11-23
+
+First v2.x release: multi-tenant scheduling. Flamejob can now authenticate users
+against Active Directory / LDAP, scope agents to directory groups via pools,
+share the fleet fairly across groups, and let an operator preempt and re-route
+in-flight work — the "management decree" capability, built natively (no Slurm
+dependency).
+
+### Added
+- **Active Directory / LDAP(S) authentication with SID-based role mapping.**
+  Search-then-bind against AD/LDAP over plaintext, StartTLS, or LDAPS; group
+  membership resolved via `tokenGroups` (nested + primary group), and authorization
+  keyed on the immutable `objectSid`. A runtime-editable connection config
+  (`directory_config`) with a **save → test → enable** flow, and a
+  `directory_role_map` that maps directory group SIDs to flamejob roles. Login is a
+  provider chain: **local/break-glass users are always tried first**, then the
+  directory. New `ViewDirectoryConfig` capability (admin + superadmin may view and
+  test; writing/enabling stays on `ManageDirectory`, superadmin only).
+- **Agent pools with directory-group access control.** Agents can be grouped into
+  pools, and directory groups granted access to specific pools. A job runs only on
+  agents in the pools its owner's groups are granted — eligibility is derived on the
+  server from verified, cached group SIDs. Back-compatible: with no pools, or for
+  local users, scheduling is unrestricted as before.
+- **Weighted fair-share scheduling with per-group quotas.** The scheduler fills free
+  GPU slots by weighted max-min fair-share across the owning directory groups
+  (per-group `weight`, `floor_slots`, `ceil_slots`), instead of plain per-job
+  round-robin. A per-group `max_submit_jobs` applies submit backpressure (HTTP 429).
+  A single ungrouped tenant keeps the prior behavior.
+- **Preemption, priority override, and keyspace handoff.** A new `ManageScheduling`
+  capability (admin + superadmin) can override a job's effective priority
+  (`COALESCE(priority_override, priority)` across admission, fair-share, and queue
+  order) and preempt a running job — either requeued or cancelled. Requeue stops the
+  in-flight chunk cleanly (no GPU-resident suspend), splits it at its last durable
+  keyspace offset, and re-dispatches the remainder — optionally to a different
+  (slower) pool — via hashcat `--skip`/`--limit`, without re-planning the job.
+
+### Security
+- Directory bind password is stored AES-GCM encrypted and is never returned to the
+  browser.
+- A misconfigured or unreachable directory can never lock out the local superadmin;
+  local/break-glass authentication always takes precedence.
+- Pool and group eligibility is always server-derived from verified cached group
+  SIDs, never from a client-supplied field.
+- Every priority-override and preemption action is written to the audit log.
+
+### Database
+- New migrations `0009_directory`, `0010_agent_pools`, `0011_group_quota`,
+  `0012_preemption`. (`0008_agent_os` shipped in 1.7.0.)
+
 ## [1.7.0] - 2026-11-23
 
 Bulk ingest of wordlists and rules from the dashboard, and OS-aware agent status
