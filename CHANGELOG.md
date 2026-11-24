@@ -4,6 +4,20 @@ All notable changes to flamejob are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-11-24
+
+Selectable dashboard themes. The dashboard now ships three design themes —
+**Mission Control** (the new default), **Tufte Dense**, and **Workbench** —
+alongside the existing Dark, Light, and OLED looks. Each theme is a set of CSS
+variable overrides on `html[data-theme=…]` over the same layout, keeping the
+muted-neutral base with the warm flame accent reserved for action and heat
+(Mission Control is calm cool-grey; Tufte Dense is neutral near-black with
+hairline borders and brighter ink; Workbench is purple-tinted with a
+pinstripe-cyan focus ring). The header "theme" button now opens a grouped
+picker (Design / Classic) instead of only cycling; the choice persists per
+browser in `localStorage.fj_theme`. The server default theme (`WebCfg.theme`)
+is now `mission`; unknown values fall back to `mission` client-side.
+
 ## [2.0.0] - 2026-11-23
 
 First v2.x release: multi-tenant scheduling. Flamejob can now authenticate users

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="mission">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -34,6 +34,47 @@
   /* OLED: make hot cards pop against the black background. */
   html[data-theme="oled"] .num.bad{font-weight:700;text-shadow:0 0 9px rgba(255,31,31,.85)}
   html[data-theme="oled"] .num.warn{font-weight:700;text-shadow:0 0 7px rgba(255,179,0,.55)}
+
+  /* ============ design themes (v2.1): mission (default) / tufte / workbench ============
+     Three selectable looks over the same layout. "Data is the only loud thing":
+     a muted neutral base with the warm flame accent reserved for action/heat.
+     Mission Control is the default (server WebCfg.theme = "mission"). */
+  /* Mission Control — ISA-101 high-performance HMI: cool-grey base, calm. */
+  html[data-theme="mission"]{
+    --bg:#0e0f11; --panel:#121417; --panel2:#171a1e; --ink:#cfd3d8; --dim:#7b8089;
+    --accent:#ff7a18; --good:#4fb477; --warn:#e5c07b; --bad:#e4212b; --busy:#ffa62b;
+    --sel:#1b1512; --track:#242830; --border:#242830;
+  }
+  /* Tufte Dense — neutral near-black, brighter ink, hairline borders. */
+  html[data-theme="tufte"]{
+    --bg:#0b0b0c; --panel:#121216; --panel2:#17171b; --ink:#e4e0d9; --dim:#7d7872;
+    --accent:#ff6a13; --good:#4fb477; --warn:#e5c07b; --bad:#e4212b; --busy:#ffa62b;
+    --sel:#17130d; --track:#1e1e22; --border:#1f1f25;
+  }
+  /* Workbench — tiling-cockpit feel: purple-tinted surfaces, pinstripe-cyan focus. */
+  html[data-theme="workbench"]{
+    --bg:#0d0c0f; --panel:#131019; --panel2:#1a1622; --ink:#d9d4cd; --dim:#7d7786;
+    --accent:#2ec4d6; --good:#4fb477; --warn:#e5c07b; --bad:#e4212b; --busy:#ffa62b;
+    --sel:#10242b; --track:#241d2e; --border:#241d2e;
+  }
+  html[data-theme="workbench"] input:focus,
+  html[data-theme="workbench"] select:focus,
+  html[data-theme="workbench"] textarea:focus{outline:2px solid var(--accent);outline-offset:0}
+
+  /* theme picker menu (opened from the header "theme" button) */
+  #themeMenu{position:fixed;z-index:60;min-width:196px;max-height:72vh;overflow:auto;
+    background:var(--panel);border:1px solid var(--border);border-radius:8px;
+    box-shadow:0 8px 28px rgba(0,0,0,.45);padding:4px;font-size:12px;display:none}
+  #themeMenu .tm-head{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.06em;padding:6px 8px 3px}
+  #themeMenu button{display:flex;width:100%;align-items:center;gap:8px;justify-content:space-between;
+    background:none;border:none;color:var(--ink);text-align:left;padding:7px 8px;border-radius:6px;cursor:pointer;font-size:12px}
+  #themeMenu button:hover{background:var(--sel)}
+  #themeMenu button .tm-sw{width:24px;height:13px;border-radius:3px;border:1px solid var(--border);flex:0 0 auto}
+  #themeMenu button.tm-current{color:var(--accent);font-weight:600}
+  #themeMenu button .tm-chk{visibility:hidden;color:var(--accent)}
+  #themeMenu button.tm-current .tm-chk{visibility:visible}
+  #themeMenu .tm-sep{height:1px;background:var(--border);margin:4px 0}
+
   *{box-sizing:border-box}
   html,body{margin:0;height:100%}
   body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.4}
@@ -577,10 +618,11 @@
   </footer>
 </div>
 <div id="pinMenu"></div>
+<div id="themeMenu" role="menu" aria-label="Theme"></div>
 
 <script>
 "use strict";
-const CFG = Object.assign({apiBase:null, apiPort:8443, theme:"dark", version:"", uploadLimit:8589934592}, "__FJCFG__");
+const CFG = Object.assign({apiBase:null, apiPort:8443, theme:"mission", version:"", uploadLimit:8589934592}, "__FJCFG__");
 // Build version, centred in the footer (injected by the server from CARGO_PKG_VERSION).
 document.getElementById("verTag").textContent = CFG.version ? ("v"+CFG.version) : "";
 
@@ -601,16 +643,54 @@ const S = { token:null, roles:[], caps:new Set(), user:"", selected:null, timer:
   jobsView:"active", selIsHist:false };
 
 // ---- theme ----
-const THEMES = ["dark","light","oled"];
+// Themes: three design themes (mission=default, tufte, workbench) plus the
+// classic dark/light/oled. The header "theme" button opens a grouped picker.
+const THEME_META = {
+  mission:  {label:"Mission Control", short:"Mission",   group:"Design",  sw:["#121417","#ff7a18"]},
+  tufte:    {label:"Tufte Dense",     short:"Tufte",     group:"Design",  sw:["#121216","#ff6a13"]},
+  workbench:{label:"Workbench",       short:"Workbench", group:"Design",  sw:["#131019","#2ec4d6"]},
+  dark:     {label:"Dark",            short:"Dark",      group:"Classic", sw:["#21232a","#61afef"]},
+  light:    {label:"Light",           short:"Light",     group:"Classic", sw:["#ffffff","#2f74c0"]},
+  oled:     {label:"OLED",            short:"OLED",      group:"Classic", sw:["#070707","#ff7a18"]},
+};
+const THEMES = ["mission","tufte","workbench","dark","light","oled"];
 function applyTheme(t){
-  if(!THEMES.includes(t)) t="dark";
+  if(!THEMES.includes(t)) t="mission";
   document.documentElement.setAttribute("data-theme", t);
   localStorage.setItem("fj_theme", t);
-  for(const id of ["themeBtn","loginTheme"]){ const b=document.getElementById(id); if(b) b.textContent="◐ "+t; }
+  const short=(THEME_META[t]&&THEME_META[t].short)||t;
+  for(const id of ["themeBtn","loginTheme"]){ const b=document.getElementById(id); if(b) b.textContent="◐ "+short; }
+  const menu=document.getElementById("themeMenu");
+  if(menu) menu.querySelectorAll("button[data-theme]").forEach(b=>b.classList.toggle("tm-current", b.dataset.theme===t));
 }
-function toggleTheme(){ const cur=document.documentElement.getAttribute("data-theme")||"dark"; applyTheme(THEMES[(THEMES.indexOf(cur)+1)%THEMES.length]); }
-applyTheme(localStorage.getItem("fj_theme") || CFG.theme || "dark");
-document.getElementById("themeBtn").onclick = toggleTheme;
+function buildThemeMenu(){
+  const menu=document.getElementById("themeMenu"); if(!menu || menu.dataset.built) return;
+  let html="", lastGroup="";
+  for(const t of THEMES){ const m=THEME_META[t]||{label:t,group:"",sw:["#333","#888"]};
+    if(m.group!==lastGroup){ html+=`<div class="tm-head">${m.group}</div>`; lastGroup=m.group; }
+    html+=`<button data-theme="${t}" role="menuitemradio"><span style="display:flex;align-items:center;gap:8px">`+
+          `<span class="tm-sw" style="background:linear-gradient(90deg,${m.sw[0]} 58%,${m.sw[1]} 58%)"></span>${m.label}</span>`+
+          `<span class="tm-chk">✓</span></button>`;
+  }
+  menu.innerHTML=html; menu.dataset.built="1";
+  const cur=document.documentElement.getAttribute("data-theme")||"mission";
+  menu.querySelectorAll("button[data-theme]").forEach(b=>{ b.classList.toggle("tm-current", b.dataset.theme===cur);
+    b.onclick=()=>{ applyTheme(b.dataset.theme); closeThemeMenu(); }; });
+}
+function themeMenuOutside(e){ const menu=document.getElementById("themeMenu"), btn=document.getElementById("themeBtn");
+  if(menu && !menu.contains(e.target) && e.target!==btn) closeThemeMenu(); }
+function openThemeMenu(){ buildThemeMenu(); const menu=document.getElementById("themeMenu"), btn=document.getElementById("themeBtn");
+  menu.style.display="block"; const r=btn.getBoundingClientRect();
+  menu.style.top=(r.bottom+6)+"px"; menu.style.left=Math.max(8, Math.min(r.left, window.innerWidth-menu.offsetWidth-8))+"px";
+  setTimeout(()=>document.addEventListener("click", themeMenuOutside), 0); }
+function closeThemeMenu(){ const menu=document.getElementById("themeMenu"); if(menu) menu.style.display="none";
+  document.removeEventListener("click", themeMenuOutside); }
+function toggleThemeMenu(){ const menu=document.getElementById("themeMenu");
+  if(menu && menu.style.display==="block") closeThemeMenu(); else openThemeMenu(); }
+// cycle stays available for the login screen's compact control
+function toggleTheme(){ const cur=document.documentElement.getAttribute("data-theme")||"mission"; applyTheme(THEMES[(THEMES.indexOf(cur)+1)%THEMES.length]); }
+applyTheme(localStorage.getItem("fj_theme") || CFG.theme || "mission");
+document.getElementById("themeBtn").onclick = (e)=>{ e.stopPropagation(); toggleThemeMenu(); };
 document.getElementById("loginTheme").onclick = toggleTheme;
 
 // ---- api ----
