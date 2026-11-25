@@ -438,7 +438,17 @@ A clean return (no "unable to …" / "no protocol specified") means the agent ca
 - **Run the agent as root** (simplest on a dedicated rig): a drop-in `/etc/systemd/system/flamejob-agent.service.d/20-root.conf` containing `[Service]\nUser=root`, then `systemctl daemon-reload && systemctl restart flamejob-agent`.
 - **Keep it unprivileged with `FJ_AGENT_FAN_HELPER`**: grant the agent `sudo` for just `nvidia-settings` (`/etc/sudoers.d/flamejob-fan`: `flamejob-agent ALL=(root) NOPASSWD: /usr/bin/nvidia-settings`, mode 440) and set `FJ_AGENT_FAN_HELPER=sudo -n` in `agent.env`. The agent then runs every fan command as `sudo -n nvidia-settings …`.
 
-**Headless setup: a dedicated Xorg with Coolbits.** On a GPU box with no monitor you typically take the desktop out of the way and run a small Xorg the agent targets. The essentials:
+**Headless setup, the easy way: `fj-agent setup-xorg`.** Rather than hand-rolling everything below, run this once as root on the worker and it does the whole dance:
+
+```sh
+sudo fj-agent setup-xorg            # add --dry-run first to preview every file it writes
+```
+
+It detects the NVIDIA GPUs and their PCI bus ids, writes `/etc/X11/xorg-flamejob.conf` with `Coolbits` and a per-GPU **virtual display** (the `ConnectedMonitor` + explicit `Modes` head GeForce cards require), installs and starts a `flamejob-xorg.service` that runs a dedicated Xorg with a fresh auth cookie group-readable by `flamejob-agent`, wires `DISPLAY`/`XAUTHORITY` into the agent via a drop-in (`/etc/systemd/system/flamejob-agent.service.d/10-flamejob-xorg.conf`), installs the `nvidia-settings` sudoers rule and sets `FJ_AGENT_FAN_HELPER=sudo -n` + `FJ_AGENT_FAN_CONTROL=true`, then restarts the agent and prints verification commands. It picks a free display automatically (override with `--display`), refuses to overwrite a hand-written `xorg.conf` (unless `--force`), and is idempotent — re-run it after adding or moving cards. Opt out of the sudoers/helper with `--no-fan-helper` (if you run the agent as root instead) or of turning fan control on with `--no-enable-fan-control`. It does **not** stop your display manager: on a box that still boots to a desktop, free the GPU first (manual step 1 below) and re-run.
+
+If you'd rather wire it by hand — or want to understand exactly what the command does — the equivalent manual steps follow.
+
+**Headless setup (manual): a dedicated Xorg with Coolbits.** On a GPU box with no monitor you typically take the desktop out of the way and run a small Xorg the agent targets. The essentials:
 
 1. Free the GPU of the desktop: `systemctl disable --now gdm3 && systemctl set-default multi-user.target`.
 2. Generate a Coolbits config and, crucially, give each headless GPU a **virtual display** — on GeForce cards the driver refuses fan control unless the GPU is driving a display head, so `AllowEmptyInitialConfiguration` alone (which leaves a `NULL` mode) is not enough. Add `Option "ConnectedMonitor" "DFP-0"` plus a `Monitor` (with `HorizSync`/`VertRefresh`) and a real `Modes "1024x768"` per GPU so each card lights a virtual head. `nvidia-xconfig --enable-all-gpus --cool-bits=28 --allow-empty-initial-configuration -o /etc/X11/xorg-flamejob.conf` is the starting point; add the ConnectedMonitor/Monitor/Modes bits.

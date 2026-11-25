@@ -4,6 +4,31 @@ All notable changes to flamejob are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-11-25
+
+One-command fan-control X server. Active NVIDIA fan control needs a classic Xorg
+with `Coolbits` and — on GeForce cards — a per-GPU **virtual display**, which
+until now every operator stood up by hand (write `xorg.conf`, run a dedicated
+Xorg service with an agent-readable auth cookie, wire `DISPLAY`/`XAUTHORITY` and
+a `nvidia-settings` sudoers rule). That whole headless recipe is now a single
+command.
+
+### Added
+- **`fj-agent setup-xorg`** (Linux): provisions the dedicated fan-control Xorg
+  end to end. It detects the NVIDIA GPUs and their PCI bus ids, generates
+  `/etc/X11/xorg-flamejob.conf` with `Coolbits` and a forced virtual head per GPU
+  (`ConnectedMonitor` + explicit `Modes`, which GeForce requires to permit fan
+  control), installs and starts a `flamejob-xorg.service` that runs Xorg with a
+  fresh MIT-MAGIC-COOKIE auth file group-readable by the agent, drops
+  `DISPLAY`/`XAUTHORITY` (and, by default, `FJ_AGENT_FAN_CONTROL=true` +
+  `FJ_AGENT_FAN_HELPER=sudo -n`) into a `flamejob-agent.service.d` override,
+  installs a scoped `nvidia-settings` sudoers rule, then reloads and restarts the
+  agent. Auto-picks a free display (`--display` to override), is idempotent,
+  refuses to clobber a hand-written `xorg.conf` without `--force`, and `--dry-run`
+  previews every file and command. `--no-fan-helper` (run the agent as root
+  instead) and `--no-enable-fan-control` opt out of those pieces. The equivalent
+  manual recipe remains documented in the admin guide.
+
 ## [2.2.0] - 2026-11-24
 
 Per-theme dashboard **structure**. v2.1 made the three design themes a recolor;

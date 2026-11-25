@@ -16,6 +16,11 @@ use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
 mod gpu;
+// Unix-only: `fj-agent setup-xorg` provisions the dedicated Coolbits Xorg (with
+// per-GPU virtual displays) that NVIDIA fan control needs on a headless box, and
+// wires the agent to it. Not applicable on Windows (no nvidia-settings/Xorg).
+#[cfg(unix)]
+mod xorg;
 // Windows-only: run as a native Service Control Manager service (counterpart of
 // the Linux systemd unit). Compiled out entirely on non-Windows targets.
 #[cfg(windows)]
@@ -106,6 +111,17 @@ fn main() -> Result<()> {
             return service::dispatch(&argv[1..]);
         }
         service::load_env_file();
+    }
+
+    // Unix: a `setup-xorg <flags>` subcommand provisions the dedicated fan-control
+    // Xorg and exits, mirroring the Windows `service` dispatch above. A plain
+    // `fj-agent` (no subcommand) falls through to the normal daemon below.
+    #[cfg(unix)]
+    {
+        let argv: Vec<String> = std::env::args().skip(1).collect();
+        if argv.first().map(String::as_str) == Some("setup-xorg") {
+            return xorg::dispatch(&argv[1..]);
+        }
     }
 
     init_console_logging();
