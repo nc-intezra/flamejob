@@ -58,6 +58,10 @@ FJ_AGENT_WORKLOAD=3
 #   then uncomment:
 #FJ_AGENT_FAN_HELPER=sudo -n
 #
+# EASY PATH: `sudo fj-agent setup-xorg` provisions all of the Xorg/Coolbits/
+# virtual-display + DISPLAY/XAUTHORITY + sudoers wiring described below for you.
+# The manual notes are kept for reference and custom setups.
+#
 # IMPORTANT: nvidia-settings needs a running classic *Xorg* server with Coolbits
 # enabled and a DISPLAY this (headless) service can reach. Without the lines below
 # fan control silently no-ops (telemetry still works).
